@@ -36,6 +36,7 @@ from .common import abort_on_crash, exit_status, df_sleep, search_attr
 from .protocols import AntStatsAndSelector, RFTempMeter, SSHClientProtocol, MsgPackAPIFactory, JSONAPIFactory
 from .services import parse_services, init_udp_direct_tx, init_udp_direct_rx, init_mavlink, init_tunnel, init_udp_proxy, hash_link_domain, bandwidth_map
 from .cluster import parse_cluster_services, gen_cluster_scripts
+from .fhss import FHSS
 from .conf import settings, cfg_files
 
 
@@ -202,7 +203,6 @@ def init(profiles, wlans, cluster_mode):
             if (txpower[wlan] if isinstance(txpower, dict) else txpower) == 'off':
                 rx_only_wlan_ids.add(idx)
 
-
     sockets = []
     cleanup_l = []
 
@@ -220,6 +220,13 @@ def init(profiles, wlans, cluster_mode):
         cleanup_l.append(rf_temp_meter)
     else:
         rf_temp_meter = None
+
+    # FHSS setup
+    if settings.common.fhss_channels:
+        fhss = FHSS(wlans[0], settings.common.wifi_channel, settings.common.fhss_channels, settings.common.fhss_interval)
+        cleanup_l.append(fhss)
+    else:
+        fhss = None
 
     if rx_only_wlan_ids:
         log.msg('RX-only wlan ids: %s' % (', '.join(map(hex, rx_only_wlan_ids))))
