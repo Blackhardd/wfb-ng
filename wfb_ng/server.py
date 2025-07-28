@@ -230,7 +230,7 @@ def init(profiles, wlans, cluster_mode):
 
     # Frequency selection setup
     if settings.common.freq_sel_channels:
-        freq_sel = FrequencySelection(wlans, control)
+        freq_sel = FrequencySelection(control, wlans)
         cleanup_l.append(freq_sel)
     else:
         freq_sel = None
