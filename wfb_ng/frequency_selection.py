@@ -15,6 +15,8 @@ class FrequencySelection:
         self.channel_index = 0
         self.interval = settings.common.freq_sel_interval
 
+        self.start()
+
     def _cleanup(self):
         self.lc.stop()
 
