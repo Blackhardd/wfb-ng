@@ -229,8 +229,8 @@ def init(profiles, wlans, cluster_mode):
         rf_temp_meter = None
 
     # Frequency selection setup
-    if settings.common.freq_sel_channels:
-        freq_sel = FrequencySelection(control, wlans)
+    if settings.common.freq_sel_enabled:
+        freq_sel = FrequencySelection(control, log, wlans)
         cleanup_l.append(freq_sel)
     else:
         freq_sel = None

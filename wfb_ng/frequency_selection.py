@@ -6,8 +6,9 @@ from . import call_and_check_rc
 from .conf import settings
 
 class FrequencySelection:
-    def __init__(self, control, wlans):
+    def __init__(self, control, log, wlans):
         self.control = control
+        self.log = log
         self.wlans = tuple(wlans)
         self.initial_channel = settings.common.wifi_channel
         self.type = settings.common.freq_sel_type
@@ -28,6 +29,7 @@ class FrequencySelection:
         self.lc.start(self.interval, now=True)
 
     def hop(self):
+        self.log.msg('Test')
         self.control.send_test()
 
         def _hop():
