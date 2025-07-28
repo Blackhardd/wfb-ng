@@ -31,7 +31,6 @@ from .proxy import UDPProxyProtocol, MavlinkSerialProxyProtocol, MavlinkUDPProxy
 from .mavlink_protocol import MavlinkARMProtocol, MavlinkTCPFactory, MavlinkLoggerProtocol
 from .tuntap import TUNTAPProtocol, TUNTAPTransport
 from .config_parser import Section
-from .fhss import FHSS
 from .conf import settings
 
 connect_udp_re = re.compile(r'^connect://(?P<addr>[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):(?P<port>[0-9]+)$', re.IGNORECASE)
