@@ -107,20 +107,6 @@ class StatisticsJSONProtocol(LineReceiver):
         self.sendLine(msg.encode('utf-8'))
 
 
-class ControlMsgPackProtocol(Int32StringReceiver):
-    def connectionMade(self):
-        self.factory.control_sessions.append(self)
-
-    def stringReceived(self, string):
-        data = msgpack.unpackb(string, strict_map_key=False, raw=False)
-        print(data)
-
-    def connectionLost(self, reason):
-        self.factory.control_sessions.remove(self)
-
-    def send_stats(self, data):
-        self.sendString(msgpack.packb(data, use_bin_type=True))
-
 class RFTempMeter(object):
     def __init__(self, wlans, measurement_interval):
         # RF module temperature by rf_path
@@ -185,12 +171,6 @@ class JSONAPIFactory(Factory):
         self.profile = profile
         self.wlans = wlans
 
-class MsgPackControlFactory(Factory):
-    noisy = False
-    protocol = ControlMsgPackProtocol
-
-    def __init__(self, sessions):
-        self.control_sessions = sessions
 
 class AntStatsAndSelector(object):
     """

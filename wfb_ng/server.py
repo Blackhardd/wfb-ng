@@ -33,11 +33,10 @@ from twisted.internet import reactor, defer
 
 from . import _log_msg, ConsoleObserver, ErrorSafeLogFile, call_and_check_rc, ExecError, version_msg
 from .common import abort_on_crash, exit_status, df_sleep, search_attr
-from .protocols import AntStatsAndSelector, RFTempMeter, SSHClientProtocol, MsgPackAPIFactory, JSONAPIFactory, MsgPackControlFactory
+from .protocols import AntStatsAndSelector, RFTempMeter, SSHClientProtocol, MsgPackAPIFactory, JSONAPIFactory
 from .services import parse_services, init_udp_direct_tx, init_udp_direct_rx, init_mavlink, init_tunnel, init_udp_proxy, hash_link_domain, bandwidth_map
 from .cluster import parse_cluster_services, gen_cluster_scripts
-from .control import Control
-from .frequency_selection import FrequencySelection
+from .commander import GSCommander, DroneCommander
 from .conf import settings, cfg_files
 
 
@@ -215,25 +214,19 @@ def init(profiles, wlans, cluster_mode):
             f._cleanup()
 
         return x
-    
-    control = Control()
-    
-    if not is_cluster:
-        p_f = MsgPackControlFactory(control.sessions)
-        sockets.append(reactor.listenTCP(14888, p_f))
+
+    if profiles == 'gs':
+        commander = GSCommander(wlans)
+    else:
+        commander = DroneCommander(wlans)
+        
+    cleanup_l.append(commander)
 
     if not is_cluster:
         rf_temp_meter = RFTempMeter(wlans, settings.common.temp_measurement_interval)
         cleanup_l.append(rf_temp_meter)
     else:
         rf_temp_meter = None
-
-    # Frequency selection setup
-    if settings.common.freq_sel_enabled:
-        freq_sel = FrequencySelection(control, log, wlans)
-        cleanup_l.append(freq_sel)
-    else:
-        freq_sel = None
 
     if rx_only_wlan_ids:
         log.msg('RX-only wlan ids: %s' % (', '.join(map(hex, rx_only_wlan_ids))))

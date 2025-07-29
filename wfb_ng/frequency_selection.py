@@ -1,14 +1,12 @@
 import time
 
-from twisted.internet import threads, task
+from twisted.internet import reactor, threads, task
 
 from . import call_and_check_rc
 from .conf import settings
 
 class FrequencySelection:
-    def __init__(self, control, log, wlans):
-        self.control = control
-        self.log = log
+    def __init__(self, wlans):
         self.wlans = tuple(wlans)
         self.initial_channel = settings.common.wifi_channel
         self.type = settings.common.freq_sel_type
@@ -16,22 +14,19 @@ class FrequencySelection:
         self.channel_index = 0
         self.interval = settings.common.freq_sel_interval
 
-        self.start()
-
     def _cleanup(self):
         self.lc.stop()
 
-    def start(self):
-        if not self.channels:
-            return
+    def schedule(self, start_time):
+        self.start_time = start_time
+        delay = max(0, self.start_time - time.time())
+        task.deferLater(reactor, delay, self._start)
 
+    def start(self):
         self.lc = task.LoopingCall(self.hop)
         self.lc.start(self.interval, now=True)
 
     def hop(self):
-        self.log.msg('Test')
-        self.control.send_test()
-
         def _hop():
             channel = self.get_next_channel()
             for wlan in enumerate(self.wlans):
@@ -48,3 +43,7 @@ class FrequencySelection:
         else:
             self.channel_index = 0
         return self.channels[self.channel_index]
+    
+    def get_start_time(self):
+        self.start_time = time.time() + (self.interval if self.interval >= 1 else 1)
+        return self.start_time
