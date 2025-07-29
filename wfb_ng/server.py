@@ -214,6 +214,8 @@ def init(profiles, wlans, cluster_mode):
             f._cleanup()
 
         return x
+    
+    print('Starting WFB-ng with profiles:', ', '.profiles)
 
     if profiles == 'gs':
         commander = GSCommander(wlans)
