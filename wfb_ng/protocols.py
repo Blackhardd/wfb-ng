@@ -21,8 +21,10 @@ import sys
 import msgpack
 import os
 import time
+import re
 import json
 
+from math import ceil
 from itertools import groupby
 from copy import deepcopy
 from twisted.python import log, failure
@@ -32,6 +34,11 @@ from twisted.protocols.basic import LineReceiver, Int32StringReceiver
 
 from .conf import settings
 
+RSSI_MIN_DB = -90
+RSSI_BIN_DB = 1
+
+SNR_MIN_DB = -40
+SNR_BIN_DB = 1
 
 class BadTelemetry(Exception):
     pass
@@ -89,14 +96,39 @@ class StatisticsJSONProtocol(LineReceiver):
     def connectionLost(self, reason):
         self.factory.ui_sessions.remove(self)
 
+    @staticmethod
+    def percentile_from_hist(counts, p, min_db, bin_db):
+        total = sum(counts)
+        if total <= 0:
+            return None
+        rank = ceil((p/100.0)*total)
+        acc = 0
+        for i, c in enumerate(counts):
+            acc += c
+            if acc >= rank:
+                return min_db + i*bin_db + bin_db/2.0
+        return min_db + (len(counts)-1)*bin_db + bin_db/2.0
+
     def send_stats(self, data):
         data = dict(data)
 
         if data['type'] == 'rx':
             ka = ('ant', 'freq', 'mcs', 'bw')
-            va = ('pkt_recv', 'rssi_min', 'rssi_avg', 'rssi_max', 'snr_min', 'snr_avg', 'snr_max')
+            va = ('pkt_recv', 'rssi_min', 'rssi_avg', 'rssi_max', 'snr_min', 'snr_avg', 'snr_max', 'rssi_samples', 'rssi_hist', 'snr_samples', 'snr_hist')
             data['rx_ant_stats'] = list(dict(zip(ka + va, (ant_id,) + k + v))
                                         for (k, ant_id), v in data.pop('rx_ant_stats').items())
+            
+            for entry in data['rx_ant_stats']:
+                rssi_samples = entry.get('rssi_samples', 0)
+                rssi_hist = entry.get('rssi_hist', [])
+
+                entry['rssi_p5'] = self.percentile_from_hist(rssi_hist, 5, RSSI_MIN_DB, RSSI_BIN_DB) if rssi_samples else None
+
+                snr_samples = entry.get('snr_samples', 0)
+                snr_hist = entry.get('snr_hist', [])
+
+                entry['snr_p5'] = self.percentile_from_hist(snr_hist, 5, SNR_MIN_DB, SNR_BIN_DB) if snr_samples else None
+
         elif data['type'] == 'tx':
             ka = ('ant',)
             va = ('pkt_sent', 'pkt_drop', 'lat_min', 'lat_avg', 'lat_max')
@@ -386,6 +418,7 @@ class RXAntennaProtocol(LineReceiver):
         self.ant_stat_cb = ant_stat_cb
         self.rx_id = rx_id
         self.ant = {}
+        self.ant_hist = {}
         self.count_all = None
         self.session = None
 
@@ -403,7 +436,18 @@ class RXAntennaProtocol(LineReceiver):
             if cmd == 'RX_ANT':
                 if len(cols) != 5:
                     raise BadTelemetry()
-                self.ant[(tuple(int(i) for i in cols[2].split(':')), int(cols[3], 16))] = tuple(int(i) for i in cols[4].split(':'))
+                
+                values = cols[4].split(':', 10)
+
+                rssi_hist_str = values[8].strip('[]')
+                rssi_hist_values = [int(x) for x in rssi_hist_str.split(',') if x.strip()]
+
+                snr_hist_str = values[10].strip('[]')
+                snr_hist_values = [int(x) for x in snr_hist_str.split(',') if x.strip()]
+
+                stats = tuple(int(i) for i in values[:8]) + (rssi_hist_values, int(values[9]), snr_hist_values)
+
+                self.ant[(tuple(int(i) for i in cols[2].split(':')), int(cols[3], 16))] = stats
 
             elif cmd == 'PKT':
                 if len(cols) != 3:

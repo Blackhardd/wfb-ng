@@ -36,7 +36,7 @@ from .common import abort_on_crash, exit_status, df_sleep, search_attr
 from .protocols import AntStatsAndSelector, RFTempMeter, SSHClientProtocol, MsgPackAPIFactory, JSONAPIFactory
 from .services import parse_services, init_udp_direct_tx, init_udp_direct_rx, init_mavlink, init_tunnel, init_udp_proxy, hash_link_domain, bandwidth_map
 from .cluster import parse_cluster_services, gen_cluster_scripts
-from .commander import GSCommander, DroneCommander
+from .manager import ManagerFactory
 from .conf import settings, cfg_files
 
 
@@ -214,15 +214,6 @@ def init(profiles, wlans, cluster_mode):
             f._cleanup()
 
         return x
-    
-    print('Starting WFB-ng with profiles:', ', '.join(profiles))
-
-    if profiles == 'gs':
-        commander = GSCommander(wlans)
-    else:
-        commander = DroneCommander(wlans)
-        
-    cleanup_l.append(commander)
 
     if not is_cluster:
         rf_temp_meter = RFTempMeter(wlans, settings.common.temp_measurement_interval)
@@ -258,6 +249,14 @@ def init(profiles, wlans, cluster_mode):
         cleanup_l.append(ant_sel_f)
 
         link_id = hash_link_domain(profile_cfg.link_domain)
+
+        # Create manager instances for drone and ground station
+        if settings.common.manager_port:
+            try:
+                manager = ManagerFactory.create(profile, profile_cfg, wlans)
+                cleanup_l.append(manager)
+            except ValueError as e:
+                log.msg(e, level="warning")
 
         if profile_cfg.stats_port:
             p_f = MsgPackAPIFactory(ant_sel_f.ui_sessions, is_cluster, cli_title)

@@ -36,7 +36,7 @@ $(ENV):
 	$(PYTHON) -m virtualenv --download $(ENV)
 	$$(PATH=$(ENV)/bin:$(ENV)/local/bin:$(PATH) which python3) -m pip install --upgrade pip setuptools $(STDEB)
 
-all_bin: wfb_rx wfb_tx wfb_keygen wfb_tx_cmd wfb_tun
+all_bin: wfb_rx wfb_tx wfb_keygen wfb_tx_cmd wfb_tun wfb_binder
 
 gs.key: wfb_keygen
 	@if ! [ -f gs.key ]; then ./wfb_keygen; fi
@@ -45,7 +45,7 @@ src/%.o: src/%.c src/*.h
 	$(CC) $(_CFLAGS) -std=gnu99 -c -o $@ $<
 
 src/%.o: src/%.cpp src/*.hpp src/*.h
-	$(CXX) $(_CFLAGS) -std=gnu++11 -c -o $@ $<
+	$(CXX) $(_CFLAGS) -std=gnu++17 -c -o $@ $<
 
 wfb_rx: src/rx.o src/radiotap.o src/fec.o src/wifibroadcast.o
 	$(CXX) -o $@ $^ $(_LDFLAGS) -lpcap
@@ -61,6 +61,9 @@ wfb_tx_cmd: src/tx_cmd.o
 
 wfb_tun: src/wfb_tun.o
 	$(CC) -o $@ $^ $(LDFLAGS) -levent_core
+
+wfb_binder: src/binder.o
+	$(CXX) -o $@ $^ $(_LDFLAGS) -lpcap -lstdc++fs
 
 wfb_rtsp: src/rtsp_server.c
 	$(CC) $(_CFLAGS) $(shell pkg-config --cflags gstreamer-rtsp-server-1.0) -o $@ $^ $(shell pkg-config --libs gstreamer-rtsp-server-1.0)
@@ -93,7 +96,7 @@ pylint:
 	pylint --disable=R,C wfb_ng/*.py
 
 clean:
-	rm -rf env wfb_rx wfb_tx wfb_tx_cmd wfb_tun wfb_rtsp wfb_keygen dist deb_dist build wfb_ng.egg-info wfb_ng-*.tar.gz _trial_temp *~ src/*.o
+	rm -rf env wfb_rx wfb_tx wfb_tx_cmd wfb_tun wfb_binder wfb_rtsp wfb_keygen dist deb_dist build wfb_ng.egg-info wfb_ng-*.tar.gz _trial_temp *~ src/*.o
 
 deb_docker:  /opt/qemu/bin
 	@if ! [ -d /opt/qemu ]; then echo "Docker cross build requires patched QEMU!\nApply ./scripts/qemu/qemu.patch to qemu-7.2.0 and build it:\n  ./configure --prefix=/opt/qemu --static --disable-system && make && sudo make install"; exit 1; fi
