@@ -49,7 +49,7 @@ class Settings(object):
         return copy.deepcopy(self.__dict__, memo)
     
     def _to_ini_literal(self, value):
-        if value is None or value is "None":
+        if value is None or value == "None":
             return None
         if isinstance(value, str):
             return json.dumps(value, ensure_ascii=False)
