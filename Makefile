@@ -37,7 +37,7 @@ $(ENV):
 	$(PYTHON) -m virtualenv --download $(ENV)
 	$$(PATH=$(ENV)/bin:$(ENV)/local/bin:$(PATH) which python3) -m pip install --upgrade pip setuptools $(STDEB)
 
-all_bin: wfb_rx wfb_tx wfb_keygen wfb_tx_cmd wfb_tun wfb_binder
+all_bin: wfb_rx wfb_tx wfb_keygen wfb_tx_cmd wfb_tun
 
 gs.key: wfb_keygen
 	@if ! [ -f gs.key ]; then ./wfb_keygen; fi
@@ -62,9 +62,6 @@ wfb_tx_cmd: src/tx_cmd.o
 
 wfb_tun: src/wfb_tun.o
 	$(CC) -o $@ $^ $(LDFLAGS) -levent_core
-
-wfb_binder: src/binder.o
-	$(CXX) -o $@ $^ $(_LDFLAGS) -lpcap -lstdc++fs
 
 wfb_rtsp: src/rtsp_server.c
 	$(CC) $(_CFLAGS) $(shell pkg-config --cflags gstreamer-rtsp-server-1.0) -o $@ $^ $(shell pkg-config --libs gstreamer-rtsp-server-1.0)
