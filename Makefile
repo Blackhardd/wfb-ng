@@ -9,6 +9,7 @@ ifneq ("$(wildcard .git)","")
                     unknown)
     COMMIT ?= $(shell git rev-parse HEAD)
     SOURCE_DATE_EPOCH ?= $(or $(shell git show -s --format="%ct" $(COMMIT)), $(shell date "+%s"))
+    SOURCE_DATE_EPOCH := $(if $(SOURCE_DATE_EPOCH),$(SOURCE_DATE_EPOCH),$(shell date "+%s"))
     VERSION ?= $(shell $(PYTHON) ./version.py $(SOURCE_DATE_EPOCH) $(RELEASE))
 else
     COMMIT ?= release
