@@ -434,7 +434,7 @@ class RXAntennaProtocol(LineReceiver):
             cmd = cols[1]
 
             if cmd == 'RX_ANT':
-                if len(cols) != 5:
+                if len(cols) != 10:
                     raise BadTelemetry()
                 
                 values = cols[4].split(':', 10)
