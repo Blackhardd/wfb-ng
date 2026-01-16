@@ -17,7 +17,6 @@
 #   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 #
 
-import sys
 import msgpack
 import os
 import time
@@ -33,12 +32,6 @@ from twisted.internet.protocol import ProcessProtocol, Factory
 from twisted.protocols.basic import LineReceiver, Int32StringReceiver
 
 from .conf import settings
-
-RSSI_MIN_DB = -90
-RSSI_BIN_DB = 1
-
-SNR_MIN_DB = -40
-SNR_BIN_DB = 1
 
 class BadTelemetry(Exception):
     pass
@@ -114,20 +107,9 @@ class StatisticsJSONProtocol(LineReceiver):
 
         if data['type'] == 'rx':
             ka = ('ant', 'freq', 'mcs', 'bw')
-            va = ('pkt_recv', 'rssi_min', 'rssi_avg', 'rssi_max', 'snr_min', 'snr_avg', 'snr_max', 'rssi_samples', 'rssi_hist', 'snr_samples', 'snr_hist')
+            va = ('pkt_recv', 'rssi_min', 'rssi_avg', 'rssi_max', 'snr_min', 'snr_avg', 'snr_max')
             data['rx_ant_stats'] = list(dict(zip(ka + va, (ant_id,) + k + v))
                                         for (k, ant_id), v in data.pop('rx_ant_stats').items())
-            
-            for entry in data['rx_ant_stats']:
-                rssi_samples = entry.get('rssi_samples', 0)
-                rssi_hist = entry.get('rssi_hist', [])
-
-                entry['rssi_p5'] = self.percentile_from_hist(rssi_hist, 5, RSSI_MIN_DB, RSSI_BIN_DB) if rssi_samples else None
-
-                snr_samples = entry.get('snr_samples', 0)
-                snr_hist = entry.get('snr_hist', [])
-
-                entry['snr_p5'] = self.percentile_from_hist(snr_hist, 5, SNR_MIN_DB, SNR_BIN_DB) if snr_samples else None
 
         elif data['type'] == 'tx':
             ka = ('ant',)
@@ -406,7 +388,6 @@ class AntStatsAndSelector(object):
                               rf_temperature=rf_temperature))
 
 
-
 class RXAntennaProtocol(LineReceiver):
     delimiter = b'\n'
 
@@ -418,7 +399,6 @@ class RXAntennaProtocol(LineReceiver):
         self.ant_stat_cb = ant_stat_cb
         self.rx_id = rx_id
         self.ant = {}
-        self.ant_hist = {}
         self.count_all = None
         self.session = None
 
@@ -429,23 +409,30 @@ class RXAntennaProtocol(LineReceiver):
         try:
             if len(cols) < 2:
                 raise BadTelemetry()
+            
+            # Telemetry packet structure:
+            # [0]       TIMESTAMP_MS
+            # [1]       COMMAND
+            # [2...N]   PAYLOAD
 
             #ts = int(cols[0])
             cmd = cols[1]
 
             if cmd == 'RX_ANT':
-                if len(cols) != 10:
+                if len(cols) != 5:
                     raise BadTelemetry()
                 
-                values = cols[4].split(':', 10)
+                # Payload structure:
+                # [0] - MEASUREMENTS_COUNT
+                # [1] - RSSI_MIN
+                # [2] - RSSI_AVG
+                # [3] - RSSI_MAX
+                # [5] - SNR_MIN
+                # [6] - SNR_AVG
+                # [7] - SNR_MAX
+                payload = cols[4].split(':', 10)
 
-                rssi_hist_str = values[8].strip('[]')
-                rssi_hist_values = [int(x) for x in rssi_hist_str.split(',') if x.strip()]
-
-                snr_hist_str = values[10].strip('[]')
-                snr_hist_values = [int(x) for x in snr_hist_str.split(',') if x.strip()]
-
-                stats = tuple(int(i) for i in values[:8]) + (rssi_hist_values, int(values[9]), snr_hist_values)
+                stats = tuple(int(i) for i in payload)
 
                 self.ant[(tuple(int(i) for i in cols[2].split(':')), int(cols[3], 16))] = stats
 

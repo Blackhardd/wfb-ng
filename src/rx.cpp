@@ -478,6 +478,9 @@ int Aggregator::get_block_ring_idx(uint64_t block_idx)
     return ring_idx;
 }
 
+/**
+ * Dump statistics to IPC channel
+ */
 void Aggregator::dump_stats(void)
 {
     //timestamp in ms
@@ -485,6 +488,7 @@ void Aggregator::dump_stats(void)
 
     for(auto it = antenna_stat.begin(); it != antenna_stat.end(); it++)
     {
+        // RX antenna stats
         IPC_MSG("%" PRIu64 "\tRX_ANT\t%u:%u:%u\t%" PRIx64 "\t%d" ":%d:%d:%d" ":%d:%d:%d\n",
                 ts, it->first.freq, it->first.mcs_index, it->first.bandwidth, it->first.antenna_id, it->second.count_all,
                 it->second.rssi_min, it->second.rssi_sum / it->second.count_all, it->second.rssi_max,
