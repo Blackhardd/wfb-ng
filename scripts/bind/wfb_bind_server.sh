@@ -15,6 +15,59 @@ show_version()
     echo $'OK\t'"$(wfb-server --version | head -n1)"
 }
 
+# Update only [common] section in existing config file
+update_common_section()
+{
+    local new_cfg="$1"
+    local existing_cfg="/etc/wifibroadcast.cfg"
+    local tmp_cfg="${existing_cfg}.tmp"
+    local common_section="${tmp_cfg}.common"
+
+    awk '
+        BEGIN { in_common = 0 }
+        /^\[common\]/ { 
+            in_common = 1
+            print
+            next
+        }
+        /^\[/ && in_common { 
+            exit
+        }
+        in_common { 
+            print
+        }
+    ' "$new_cfg" > "$common_section"
+
+    # Remove old [common] section from existing config
+    awk '
+        BEGIN { in_common = 0; found_common = 0 }
+        /^\[common\]/ { 
+            in_common = 1
+            found_common = 1
+            next
+        }
+        /^\[/ && in_common { 
+            in_common = 0
+            print
+            next
+        }
+        !in_common { 
+            print
+        }
+        in_common { 
+            # Skip old common section content
+            next
+        }
+    ' "$existing_cfg" > "$tmp_cfg"
+
+    if [ -s "$common_section" ] && [ "$(tail -c 1 "$common_section")" != "" ]; then
+        echo "" >> "$common_section"
+    fi
+    cat "$common_section" "$tmp_cfg" > "$existing_cfg"
+
+    rm -f "$tmp_cfg" "$common_section"
+}
+
 do_bind()
 {
     set -e
@@ -31,7 +84,18 @@ do_bind()
         exit 0
     fi
 
-    for i in wifibroadcast.cfg drone.key bind.yaml
+    if [ -f wifibroadcast.cfg ]
+    then
+        if [ ! -f /etc/wifibroadcast.cfg ]
+        then
+            cp wifibroadcast.cfg /etc/
+        else
+            update_common_section wifibroadcast.cfg
+        fi
+    fi
+
+    # Copy other files normally
+    for i in drone.key bind.yaml
     do
         if [ -f $i ]
         then
