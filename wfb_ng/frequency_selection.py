@@ -129,7 +129,7 @@ class Channel():
         per = self.per(frames)
         snr = self.snr(frames)
 
-        pen_per = 75 * clamp(per / 20, 0.0, 1.0)  # Penalty for PER over 20%
+        pen_per = 75 * clamp(per / 5, 0.0, 1.0)  # Penalty for PER over 20%
         pen_snr = 25 * clamp((20 - snr) / 20, 0.0, 1.0)  # Penalty for SNR below 20dB
 
         self._score.append(100 - (pen_per + pen_snr))
@@ -178,21 +178,39 @@ class Channel():
         # Validate frame parameter
         if frames is None or frames < 1:
             frames = 1
-
-        # Determine the maximum number of frames available
-        max_frames = min(len(meas) for meas in self._measurements.values())
-        if max_frames == 0:
+        # ================================
+        # SNR fix 24.01.2026
+        # example: if there is no video stream, only then we return 0
+        # ================================
+        active_meas = []
+        for meas in self._measurements.values():
+            if len(meas) != 0:
+                active_meas.append(meas)
+        if len(active_meas) == 0:
             return 0
+        min_lengths = []
+        for meas in active_meas:
+            min_lengths.append(len(meas))
         
-        if frames < max_frames:
+        # ================================
+        # SNR fix 24.01.2026
+        # We take the smallest number of frames from all active data "streams"
+        # ================================
+        max_frames = min(min_lengths)
+        if frames > max_frames:
             frames = max_frames
+            
+            # ================================
+            # SNR fix 24.01.2026
+            # Extra check. It do not use SNR equal zero in math
+            # ================================
+        for meas in active_meas:
+            window = [stats['snr'] for stats in meas[-frames:]]
+            if any(v != 0 for v in window):
+                snr_vals.append(window)
 
-        for rx_id, meas in self._measurements.items():
-            snr_vals.append([stats['snr'] for stats in meas[-frames:]])
-
-        for snr_list in snr_vals:
-            if snr_list[-1] == 0:
-                return 0
+        if not snr_vals:
+            return 0
 
         return avg_db_snr(snr_vals)
     
