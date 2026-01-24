@@ -250,7 +250,8 @@ def init(profiles, wlans, cluster_mode):
 
         link_id = hash_link_domain(profile_cfg.link_domain)
 
-        # Create manager instances for drone and ground station
+        # Создаю пустой менеджер что бы при условиях не было ошибки
+        manager = None
         if settings.common.manager_port:
             try:
                 manager = ManagerFactory.create(profile, profile_cfg, wlans)
@@ -268,9 +269,15 @@ def init(profiles, wlans, cluster_mode):
 
         for service_name, service_type, srv_cfg in service_list:
             log.msg('Starting %s/%s@%s' % (profile, service_name, profile_cfg.link_domain))
-            dl.append(defer.maybeDeferred(type_map[service_type], service_name, srv_cfg,
-                                          srv_cfg.udp_peers_auto if is_cluster else wlans,
-                                          link_id, ant_sel_f, is_cluster, rx_only_wlan_ids))
+            # StatusManager - Передаем manager в init_mavlink для работы с отслеживанием дрона
+            service_args = [service_name, srv_cfg,
+                            srv_cfg.udp_peers_auto if is_cluster else wlans,
+                            link_id, ant_sel_f, is_cluster, rx_only_wlan_ids]
+            
+            if service_type == 'mavlink' and hasattr(manager, 'status_manager') and manager.status_manager:
+                service_args.append(manager)
+                
+            dl.append(defer.maybeDeferred(type_map[service_type], *service_args))
 
     yield defer.gatherResults(dl, consumeErrors=True).addBoth(_cleanup).addErrback(lambda f: f.trap(defer.FirstError) and f.value.subFailure)
 
