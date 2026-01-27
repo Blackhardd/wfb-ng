@@ -1,52 +1,11 @@
-#pragma once
+#ifndef __ZFEX_H
+#define __ZFEX_H
 
-/**
- * zfec -- fast forward error correction library with Python interface
- * https://tahoe-lafs.org/trac/zfec/
-
- This package implements an "erasure code", or "forward error correction code".
- You may use this package under the GNU General Public License, version 2 or, at your option, any later version.
-*/
+#include "zfex_macros.h"
+#include "zfex_status.h"
 
 #include <stddef.h>
 #include <stdint.h>
-
-typedef unsigned char gf;
-
-typedef struct {
-  uint16_t k, n;                     /* parameters of the code */
-  gf* enc_matrix;
-} fec_t;
-
-#if defined(_MSC_VER)
-// actually, some of the flavors (i.e. Enterprise) do support restrict
-//#define restrict __restrict
-#define restrict
-#endif
-
-/**
- * param k the number of blocks required to reconstruct
- * param n the total number of blocks created
- */
-fec_t* fec_new(uint16_t k, uint16_t n);
-void fec_free(fec_t* p);
-
-/**
- * @param inpkts the "primary blocks" i.e. the chunks of the input data
- * @param fecs buffers into which the secondary blocks will be written
- * @param block_nums the numbers of the desired check blocks (the id >= k) which fec_encode() will produce and store into the buffers of the fecs parameter
- * @param num_block_nums the length of the block_nums array
- * @param sz size of a packet in bytes
- */
-void fec_encode(const fec_t* code, const gf** src, gf** fecs, size_t sz);
-
-/**
- * @param inpkts an array of packets (size k); If a primary block, i, is present then it must be at index i. Secondary blocks can appear anywhere.
- * @param outpkts an array of buffers into which the reconstructed output packets will be written (only packets which are not present in the inpkts input will be reconstructed and written to outpkts)
- * @param index an array of the blocknums of the packets in inpkts
- * @param sz size of a packet in bytes
- */
-void fec_decode(const fec_t* code, const gf** inpkts, gf** outpkts, const unsigned*  index, size_t sz);
 
 #if defined(_MSC_VER)
 #define alloca _alloca
@@ -60,22 +19,77 @@ void fec_decode(const fec_t* code, const gf** inpkts, gf** outpkts, const unsign
 #endif
 #endif
 
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+
+typedef unsigned char gf;
+
+typedef struct
+{
+    uint16_t k, n;                     /* parameters of the code */
+    gf* enc_matrix;
+} fec_t;
+
+extern const char* zfex_opt;
+
 /**
- * zfec -- fast forward error correction library with Python interface
- * 
+ * param k the number of blocks required to reconstruct
+ * param m the total number of blocks created
+ */
+zfex_status_code_t fec_new(uint16_t k, uint16_t m, fec_t **out_fec_pp);
+zfex_status_code_t fec_free(fec_t* p);
+
+/**
+ * @param inpkts the "primary blocks" i.e. the chunks of the input data, all chunks must begin at an address aligned to ZFEX_SIMD_ALIGNMENT
+ * @param fecs buffers into which the secondary blocks will be written, all blocks indicated through block_nums must begin at an address aligned to ZFEX_SIMD_ALIGNMENT
+ * @param block_nums the numbers of the desired check blocks (the id >= k) which fec_encode() will produce and store into the buffers of the fecs parameter
+ * @param num_block_nums the length of the block_nums array
+ * @param sz size of a packet in bytes
+ *
+ * @return EXIT_SUCCESS if all the input was validated as correct, EXIT_FAILURE otherwise
+ */
+zfex_status_code_t fec_encode_simd(
+    const fec_t* code,
+    const gf* ZFEX_RESTRICT const* ZFEX_RESTRICT const inpkts,
+    gf* ZFEX_RESTRICT const* ZFEX_RESTRICT const fecs,
+    size_t sz);
+
+/**
+ * @param inpkts an array of packets (size k); If a primary block, i, is present then it must be at index i. Secondary blocks can appear anywhere.
+ * @param outpkts an array of buffers into which the reconstructed output packets will be written (only packets which are not present in the inpkts input will be reconstructed and written to outpkts)
+ * @param index an array of the blocknums of the packets in inpkts
+ * @param sz size of a packet in bytes
+ *
+ * @return EXIT_SUCCESS if all the input was validated as correct, EXIT_FAILURE otherwise
+ */
+zfex_status_code_t fec_decode_simd(
+    fec_t const *code,
+    gf const **inpkts,
+    gf * const *outpkts,
+    unsigned int *index,
+    size_t const sz);
+
+/**
+ * zfex -- fast forward error correction library with Python interface
+ *
  * Copyright (C) 2007-2008 Allmydata, Inc.
  * Author: Zooko Wilcox-O'Hearn
- * 
- * This file is part of zfec.
- * 
+ * Copyright (C) 2022 Wojciech Migda
+ *
+ * This file is part of zfex.
+ *
  * See README.rst for licensing information.
  */
 
 /*
- * Much of this work is derived from the "fec" software by Luigi Rizzo, et 
- * al., the copyright notice and licence terms of which are included below 
+ * Much of this work is derived from the "fec" software by Luigi Rizzo, et
+ * al., the copyright notice and licence terms of which are included below
  * for reference.
- * 
+ *
  * fec.h -- forward error correction based on Vandermonde matrices
  * 980614
  * (C) 1997-98 Luigi Rizzo (luigi@iet.unipi.it)
@@ -84,7 +98,7 @@ void fec_decode(const fec_t* code, const gf** inpkts, gf** outpkts, const unsign
  * Robert Morelos-Zaragoza (robert@spectra.eng.hawaii.edu) and Hari
  * Thirumoorthy (harit@spectra.eng.hawaii.edu), Aug 1995
  *
- * Modifications by Dan Rubenstein (see Modifications.txt for 
+ * Modifications by Dan Rubenstein (see Modifications.txt for
  * their description.
  * Modifications (C) 1998 Dan Rubenstein (drubenst@cs.umass.edu)
  *
@@ -113,3 +127,10 @@ void fec_decode(const fec_t* code, const gf** inpkts, gf** outpkts, const unsign
  * OF SUCH DAMAGE.
  */
 
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif /* __ZFEX_H */

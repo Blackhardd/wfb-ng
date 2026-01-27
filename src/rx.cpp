@@ -19,6 +19,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -36,10 +37,11 @@
 #include <sys/ioctl.h>
 #include <linux/random.h>
 
+#include "zfex.h"
+
 extern "C"
 {
 #include "ieee80211_radiotap.h"
-#include "fec.h"
 }
 
 #include <string>
@@ -272,6 +274,7 @@ Aggregator::Aggregator(const string &keypair, uint64_t epoch, uint32_t channel_i
     last_known_block((uint64_t)-1), epoch(epoch), channel_id(channel_id)
 {
     memset(session_key, '\0', sizeof(session_key));
+    memset(session_hash, '\0', sizeof(session_hash));
 
     FILE *fp;
     if((fp = fopen(keypair.c_str(), "r")) == NULL)
@@ -310,7 +313,9 @@ void Aggregator::init_fec(int k, int n)
 
     fec_k = k;
     fec_n = n;
-    fec_p = fec_new(fec_k, fec_n);
+
+    zfex_status_code_t rc = fec_new(fec_k, fec_n, &fec_p);
+    assert(rc == ZFEX_SC_OK);
 
     rx_ring_front = 0;
     rx_ring_alloc = 0;
@@ -325,7 +330,8 @@ void Aggregator::init_fec(int k, int n)
         rx_ring[ring_idx].fragments = new uint8_t*[fec_n];
         for(int i=0; i < fec_n; i++)
         {
-            rx_ring[ring_idx].fragments[i] = new uint8_t[MAX_FEC_PAYLOAD];
+            int _rc = posix_memalign((void**)&rx_ring[ring_idx].fragments[i], ZFEX_SIMD_ALIGNMENT, ZFEX_ROUND_UP_SIMD(MAX_FEC_PAYLOAD));
+            assert(_rc == 0);
         }
         rx_ring[ring_idx].fragment_map = new size_t[fec_n];
         memset(rx_ring[ring_idx].fragment_map, '\0', fec_n * sizeof(size_t));
@@ -342,13 +348,14 @@ void Aggregator::deinit_fec(void)
         rx_ring[ring_idx].fragment_map = NULL;
         for(int i=0; i < fec_n; i++)
         {
-            delete[] rx_ring[ring_idx].fragments[i];
+            free(rx_ring[ring_idx].fragments[i]);
         }
         delete[] rx_ring[ring_idx].fragments;
         rx_ring[ring_idx].fragments = NULL;
     }
 
-    fec_free(fec_p);
+    zfex_status_code_t rc = fec_free(fec_p);
+    assert(rc == ZFEX_SC_OK);
     fec_p = NULL;
     fec_k = -1;
     fec_n = -1;
@@ -569,6 +576,8 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
                                 uint8_t bandwidth, sockaddr_in *sockaddr)
 {
     uint8_t session_tmp[MAX_SESSION_PACKET_SIZE - crypto_box_MACBYTES - sizeof(wsession_hdr_t)];
+    uint8_t new_session_hash[sizeof(session_hash)];
+
     wsession_data_t* new_session_data = NULL;
     //size_t new_session_tags_size = 0;
 
@@ -603,6 +612,24 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
         {
             WFB_ERR("Invalid session key packet\n");
             count_p_bad += 1;
+            return;
+        }
+
+        if(crypto_generichash(new_session_hash,
+                              sizeof(new_session_hash),
+                              buf + sizeof(wsession_hdr_t),
+                              size - sizeof(wsession_hdr_t),
+                              ((wsession_hdr_t*)buf)->session_nonce,
+                              sizeof(((wsession_hdr_t*)buf)->session_nonce)) != 0)
+        {
+            // Should newer happened
+            assert(0);
+        }
+
+        if (memcmp(session_hash, new_session_hash, sizeof(session_hash)) == 0)
+        {
+            // Session is equal to current so we can ignore it
+            count_p_session += 1;
             return;
         }
 
@@ -675,6 +702,9 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
             IPC_MSG("%" PRIu64 "\tSESSION\t%" PRIu64 ":%u:%d:%d\n", get_time_ms(), epoch, WFB_FEC_VDM_RS, fec_k, fec_n);
             IPC_MSG_SEND();
         }
+
+        // Cache already processed session
+        memcpy(session_hash, new_session_hash, sizeof(session_hash));
 
         return;
 
@@ -840,8 +870,15 @@ void Aggregator::send_packet(int ring_idx, int fragment_idx)
 
     if (packet_seq > seq + 1 && seq > 0)
     {
-        ANDROID_IPC_MSG("PKT_LOST\t%d", (packet_seq - seq - 1));
-        count_p_lost += (packet_seq - seq - 1);
+        uint32_t lost_count = packet_seq - seq - 1;
+        ANDROID_IPC_MSG("PKT_LOST\t%d", lost_count);
+        count_p_lost += lost_count;
+
+        // Immediate packet loss notification
+        if (packet_loss_listener_ != NULL)
+        {
+            packet_loss_listener_->on_packet_loss(lost_count, seq, packet_seq);
+        }
     }
 
     seq = packet_seq;
@@ -898,7 +935,9 @@ void Aggregator::apply_fec(int ring_idx)
 
     assert(max_packet_size > 0);
     assert(max_packet_size <= MAX_FEC_PAYLOAD);
-    fec_decode(fec_p, (const uint8_t**)in_blocks, out_blocks, index, max_packet_size);
+
+    zfex_status_code_t rc = fec_decode_simd(fec_p, (const uint8_t**)in_blocks, out_blocks, index, ZFEX_ROUND_UP_SIMD(max_packet_size));
+    assert(rc == ZFEX_SC_OK);
 }
 
 AggregatorUDPv4::AggregatorUDPv4(const std::string &client_addr, int client_port, const std::string &keypair, uint64_t epoch, uint32_t channel_id, int snd_buf_size) : \
@@ -1161,7 +1200,7 @@ int main(int argc, char* const *argv)
             WFB_INFO("RX aggregator: %s -a server_port [-K rx_key] { [-c client_addr] [-u client_port] | [-U unix_socket] } [-R rcv_buf]\n"
                      "                                 [-s snd_buf] [-l log_interval] [-p radio_port] [-e epoch] [-i link_id]\n", argv[0]);
             WFB_INFO("Default: K='%s', connect=%s:%d, link_id=0x%06x, radio_port=%u, epoch=%" PRIu64 ", log_interval=%d, rcv_buf=system_default, snd_buf=system_default\n", keypair.c_str(), client_addr.c_str(), client_port, link_id, radio_port, epoch, log_interval);
-            WFB_INFO("WFB-ng version %s\n", WFB_VERSION);
+            WFB_INFO("WFB-ng version %s, FEC: %s\n", WFB_VERSION, zfex_opt);
             WFB_INFO("WFB-ng home page: <http://wfb-ng.org>\n");
             exit(1);
         }

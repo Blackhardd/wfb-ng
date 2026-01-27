@@ -1,3 +1,4 @@
+#pragma once
 // -*- C++ -*-
 //
 // Copyright (C) 2017 - 2024 Vasily Evseenko <svpcom@p2ptech.org>
@@ -31,7 +32,15 @@
 #include <stdexcept>
 
 #include "wifibroadcast.hpp"
+#include "zfex.h"
 
+// Forward declaration for isolated packet loss notification
+class PacketLossListener
+{
+public:
+    virtual ~PacketLossListener() = default;
+    virtual void on_packet_loss(uint32_t lost_count, uint32_t last_seq, uint32_t new_seq) = 0;
+};
 
 typedef enum {
     LOCAL,
@@ -169,6 +178,9 @@ public:
                                 uint8_t bandwidth, sockaddr_in *sockaddr);
     virtual void dump_stats(void);
 
+    // Packet loss listener for immediate notifications
+    void set_packet_loss_listener(PacketLossListener* listener) { packet_loss_listener_ = listener; }
+
     // Make stats public for android userspace receiver
     void clear_stats(void)
     {
@@ -222,6 +234,7 @@ private:
     fec_t* fec_p;
     int fec_k;  // RS number of primary fragments in block
     int fec_n;  // RS total number of fragments in block
+    uint8_t session_hash[crypto_generichash_BYTES];
 
     uint32_t seq;
     rx_ring_item_t rx_ring[RX_RING_SIZE];
@@ -235,6 +248,9 @@ private:
     uint8_t rx_secretkey[crypto_box_SECRETKEYBYTES];
     uint8_t tx_publickey[crypto_box_PUBLICKEYBYTES];
     uint8_t session_key[crypto_aead_chacha20poly1305_KEYBYTES];
+
+    // Packet loss listener for immediate notifications
+    PacketLossListener* packet_loss_listener_ = nullptr;
 };
 
 

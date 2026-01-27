@@ -40,10 +40,8 @@
 #include <vector>
 #include <set>
 
-extern "C"
-{
-#include "fec.h"
-}
+#include "zfex.h"
+
 
 using namespace std;
 
@@ -98,11 +96,13 @@ void Transmitter::deinit_session(void)
 {
     for(int i=0; i < fec_n; i++)
     {
-        delete[] block[i];
+        free(block[i]);
     }
 
     delete[] block;
-    fec_free(fec_p);
+
+    zfex_status_code_t rc = fec_free(fec_p);
+    assert(rc == ZFEX_SC_OK);
 
     block = NULL;
     fec_p = NULL;
@@ -125,12 +125,15 @@ void Transmitter::init_session(int k, int n)
 
     fec_k = k;
     fec_n = n;
-    fec_p = fec_new(fec_k, fec_n);
+
+    zfex_status_code_t rc = fec_new(fec_k, fec_n, &fec_p);
+    assert(rc == ZFEX_SC_OK);
 
     block = new uint8_t*[fec_n];
     for(int i=0; i < fec_n; i++)
     {
-        block[i] = new uint8_t[MAX_FEC_PAYLOAD];
+        int _rc = posix_memalign((void**)&block[i], ZFEX_SIMD_ALIGNMENT, ZFEX_ROUND_UP_SIMD(MAX_FEC_PAYLOAD));
+        assert(_rc == 0);
     }
 
     block_idx = 0;
@@ -613,7 +616,8 @@ bool Transmitter::send_packet(const uint8_t *buf, size_t size, uint8_t flags)
 
     if (fragment_idx < fec_k)  return true;
 
-    fec_encode(fec_p, (const uint8_t**)block, block + fec_k, max_packet_size);
+    zfex_status_code_t _rc = fec_encode_simd(fec_p, (const uint8_t**)block, block + fec_k, ZFEX_ROUND_UP_SIMD(max_packet_size));
+    assert(_rc == ZFEX_SC_OK);
 
     // mark fec packets with fwmark + 1
     set_mark(1);
@@ -1742,7 +1746,7 @@ int main(int argc, char * const *argv)
             WFB_INFO("Default: K='%s', k=%d, n=%d, fec_delay=%u [us], udp_port=%d, link_id=0x%06x, radio_port=%u, epoch=%" PRIu64 ", bandwidth=%d guard_interval=%s stbc=%d ldpc=%d mcs_index=%d vht_nss=%d, vht_mode=%d, fec_timeout=%d, log_interval=%d, rcv_buf=system_default, snd_buf=system_default, frame_type=data, mirror=false, use_qdisc=false, fwmark=%u, control_port=%d\n",
                     keypair.c_str(), k, n, fec_delay, udp_port, link_id, radio_port, epoch, bandwidth, short_gi ? "short" : "long", stbc, ldpc, mcs_index, vht_nss, vht_mode, fec_timeout, log_interval, fwmark, control_port);
             WFB_INFO("Radio MTU: %lu\n", (unsigned long)MAX_PAYLOAD_SIZE);
-            WFB_INFO("WFB-ng version %s\n", WFB_VERSION);
+            WFB_INFO("WFB-ng version %s, FEC: %s\n", WFB_VERSION, zfex_opt);
             WFB_INFO("WFB-ng home page: <http://wfb-ng.org>\n");
             exit(1);
         }

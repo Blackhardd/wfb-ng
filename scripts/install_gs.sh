@@ -62,12 +62,12 @@ then
 
     apt -y install python3-all python3-all-dev libpcap-dev libsodium-dev libevent-dev python3-pip python3-pyroute2 python3-msgpack \
        python3-twisted python3-serial python3-jinja2 iw virtualenv debhelper dh-python fakeroot build-essential \
-       libgstrtspserver-1.0-dev socat git
+       libgstrtspserver-1.0-dev socat git libcatch2-dev
 
     tmpdir="$(mktemp -d)"
     git clone -b $release --depth 1 https://github.com/svpcom/wfb-ng.git "$tmpdir"
 
-    (cd "$tmpdir" && make deb && apt -y install ./deb_dist/*.deb)
+    (cd "$tmpdir" && make deb CFLAGS="-march=native" && apt -y install ./deb_dist/*.deb)
     rm -rf "$tmpdir"
 fi
 
@@ -85,7 +85,7 @@ fi
 # Setup config
 cat <<EOF > /etc/wifibroadcast.cfg
 [common]
-wifi_channel = 165     # 165 -- radio channel @5825 MHz, range: 5815–5835 MHz, width 20MHz
+wifi_channel = 165     # 165 -- radio channel @5825 MHz, range: 5815-5835 MHz, width 20MHz
                        # 1 -- radio channel @2412 Mhz,
                        # see https://en.wikipedia.org/wiki/List_of_WLAN_channels for reference
 wifi_region = 'BO'     # Your country for CRDA (use BO or GY if you want max tx power)
