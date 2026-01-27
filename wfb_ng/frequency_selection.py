@@ -92,10 +92,25 @@ class StatsFactory(ReconnectingClientFactory):
 
             if rx_id not in self._prev:
                 stats['p_total'] = packets['all'][1]
-                stats['p_bad'] = packets['lost'][1] + packets['dec_err'][1]
+                stats['p_bad']   = packets['lost'][1] + packets['dec_err'][1]
             else:
-                stats['p_total'] = packets['all'][1] - self._prev[rx_id]['packets']['all'][1]
-                stats['p_bad'] = (packets['lost'][1] - self._prev[rx_id]['packets']['lost'][1]) + (packets['dec_err'][1] - self._prev[rx_id]['packets']['dec_err'][1])
+                # вот тут переполнение и ресет происходил, решаем в єтом месте
+                # ранее тут было вот это:
+                # else:
+                #     stats['p_total'] = packets['all'][1] - self._prev[rx_id]['packets']['all'][1]
+                #     stats['p_bad'] = (packets['lost'][1] - self._prev[rx_id]['packets']['lost'][1]) + (packets['dec_err'][1] - self._prev[rx_id]['packets']['dec_err'][1])      
+                p_total_diff   = packets['all'][1]     - self._prev[rx_id]['packets']['all'][1]
+                p_lost_diff    = packets['lost'][1]    - self._prev[rx_id]['packets']['lost'][1]
+                p_dec_err_diff = packets['dec_err'][1] - self._prev[rx_id]['packets']['dec_err'][1]
+                
+                # ЕКогда счетсчик уменшается во время переполнения или сброса
+                # вот тогда используем абсолютные значения
+                if p_total_diff < 0:
+                    stats['p_total'] = packets['all'][1]
+                    stats['p_bad']   = packets['lost'][1] + packets['dec_err'][1]
+                else:
+                    stats['p_total'] = p_total_diff
+                    stats['p_bad']   = max(0, p_lost_diff) + max(0, p_dec_err_diff)
 
             # Set previous state
             self._prev[rx_id] = {
@@ -129,12 +144,27 @@ class Channel():
         per = self.per(frames)
         snr = self.snr(frames)
 
-        pen_per = 75 * clamp(per / 20, 0.0, 1.0)  # Penalty for PER over 20%
+        pen_per = 75 * clamp(per / 5, 0.0, 1.0)  # Penalty for PER over 5%
         pen_snr = 25 * clamp((20 - snr) / 20, 0.0, 1.0)  # Penalty for SNR below 20dB
 
         self._score.append(100 - (pen_per + pen_snr))
 
         log.msg(f"Channel {self._freq}{' MHz' if self._freq > 2000 else ''} - PER: {per}%, SNR: {snr:.2f} dB, Score: {self._score[-1]:.2f}")
+
+        # Log detailed packet statistics
+        packet_info_parts = []
+        for rx_id in ['video', 'mavlink', 'tunnel']:
+            if rx_id in self._measurements and len(self._measurements[rx_id]) > 0:
+                meas = self._measurements[rx_id]
+                p_total = sum(stats['p_total'] for stats in meas[-frames:])
+                p_bad = sum(stats['p_bad'] for stats in meas[-frames:])
+                
+                rx_label = 'vid' if rx_id == 'video' else ('mk' if rx_id == 'mavlink' else 'tl')
+                packet_info_parts.append(f"{rx_label}: [tot={p_total},bad={p_bad}]")
+        
+        if packet_info_parts:
+            packet_info = "PER: {}% {}".format(per, " ".join(packet_info_parts))
+            log.msg(packet_info)
 
         # Update last score update time
         self._score_update_time = time.time()
@@ -168,7 +198,17 @@ class Channel():
             p_total += sum(stats['p_total'] for stats in meas[-frames:])
             p_bad += sum(stats['p_bad'] for stats in meas[-frames:])
 
-        per = round((p_bad / p_total) * 100) if p_total > 0 else 100
+        # Ранее здесь была эта функция:
+        # per = round((p_bad / p_total) * 100) if p_total > 0 else 100
+        # Она была плохая тем, что не учитывала возможные ошибки со счётчиками пакетов:
+        # иногда p_bad по ошибке может быть больше p_total, что давало некорректные >100% PER.
+        # Также не было явного клэмпа результата.
+        if p_total > 0:
+            p_bad  = min(p_bad, p_total)  # Ограничиваем p_bad сверху p_total из-за возможных сбоев
+            per    = round((p_bad / p_total) * 100)
+            per    = clamp(per, 0, 100)     # Клэмпим диапазон явно
+        else:
+            per = 100
 
         return per
 
@@ -178,21 +218,39 @@ class Channel():
         # Validate frame parameter
         if frames is None or frames < 1:
             frames = 1
-
-        # Determine the maximum number of frames available
-        max_frames = min(len(meas) for meas in self._measurements.values())
-        if max_frames == 0:
+        # ================================
+        # SNR fix 24.01.2026
+        # example: if there is no video stream, only then we return 0
+        # ================================
+        active_meas = []
+        for meas in self._measurements.values():
+            if len(meas) != 0:
+                active_meas.append(meas)
+        if len(active_meas) == 0:
             return 0
+        min_lengths = []
+        for meas in active_meas:
+            min_lengths.append(len(meas))
         
-        if frames < max_frames:
+        # ================================
+        # SNR fix 24.01.2026
+        # We take the smallest number of frames from all active data "streams"
+        # ================================
+        max_frames = min(min_lengths)
+        if frames > max_frames:
             frames = max_frames
+            
+            # ================================
+            # SNR fix 24.01.2026
+            # Extra check. It do not use SNR equal zero in math
+            # ================================
+        for meas in active_meas:
+            window = [stats['snr'] for stats in meas[-frames:]]
+            if any(v != 0 for v in window):
+                snr_vals.append(window)
 
-        for rx_id, meas in self._measurements.items():
-            snr_vals.append([stats['snr'] for stats in meas[-frames:]])
-
-        for snr_list in snr_vals:
-            if snr_list[-1] == 0:
-                return 0
+        if not snr_vals:
+            return 0
 
         return avg_db_snr(snr_vals)
     
@@ -329,7 +387,7 @@ class FrequencySelection:
         log.msg("Frequency selection is disabled or not configured properly.")
         return False
     
-    def last_hop_timed_out(self, timeout):
+    def is_hop_timed_out(self, timeout):
         if time.time() - self._last_hop_time >= timeout:
             return True
         return False

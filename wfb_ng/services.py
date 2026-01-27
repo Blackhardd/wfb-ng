@@ -177,7 +177,7 @@ def init_udp_direct_rx(service_name, cfg, wlans, link_id, ant_sel_f, is_cluster,
 
 
 @defer.inlineCallbacks
-def init_mavlink(service_name, cfg, wlans, link_id, ant_sel_f, is_cluster, rx_only_wlan_ids):
+def init_mavlink(service_name, cfg, wlans, link_id, ant_sel_f, is_cluster, rx_only_wlan_ids, manager=None): # Sander, добавил в конец manager=none
     listen = None
     connect = None
     serial = None
@@ -208,16 +208,23 @@ def init_mavlink(service_name, cfg, wlans, link_id, ant_sel_f, is_cluster, rx_on
 
     rx_hooks = []
     tx_hooks = []
+    # ================== ТОЧКА ВХОДА StatusManager для MAVLink ==========================
 
-    if cfg.call_on_arm or cfg.call_on_disarm:
-        arm_proto = MavlinkARMProtocol(cfg.call_on_arm, cfg.call_on_disarm)
-        rx_hooks.append(arm_proto.dataReceived)
-        tx_hooks.append(arm_proto.dataReceived)
+    status_manager = None  # менеджер статуса
+    if manager and hasattr(manager, 'status_manager') and manager.status_manager:
+        status_manager = manager.status_manager  # StatusManager для отслеживания статуса
+
+    if cfg.call_on_arm or cfg.call_on_disarm or status_manager:
+        arm_proto = MavlinkARMProtocol(cfg.call_on_arm, cfg.call_on_disarm, status_manager=status_manager)  # MavlinkARMProtocol для arm/disarm
+        rx_hooks.append(arm_proto.dataReceived)  # RX хук arm/disarm
+        tx_hooks.append(arm_proto.dataReceived)  # TX хук arm/disarm
+        if status_manager:
+            log.msg('StatusManager: Integration is complete')  # Лог интеграции
 
     if cfg.log_messages and ant_sel_f.logger is not None:
-        mav_log_proto = MavlinkLoggerProtocol(ant_sel_f.logger)
-        rx_hooks.append(mav_log_proto.dataReceived)
-        tx_hooks.append(mav_log_proto.dataReceived)
+        mav_log_proto = MavlinkLoggerProtocol(ant_sel_f.logger)  # логгер mavlink
+        rx_hooks.append(mav_log_proto.dataReceived)  # RX хук логгера
+        tx_hooks.append(mav_log_proto.dataReceived)  # TX хук логгера
 
     if serial:
         p_in = MavlinkSerialProxyProtocol(agg_max_size=settings.common.radio_mtu,
@@ -238,6 +245,18 @@ def init_mavlink(service_name, cfg, wlans, link_id, ant_sel_f, is_cluster, rx_on
 
     p_rx = UDPProxyProtocol()
     p_rx.peer = p_in
+
+    # ===== ИНТЕГРАЦИЯ StatusManager  =====
+    # Чтобы StatusManager видел только РЕАЛЬНЫЕ пакеты из радиоканала от дрона
+    if status_manager:
+        original_message_received = p_rx.messageReceived
+        def status_rx_message_received(data):
+            if status_manager:
+                status_manager.on_packet_received()
+            return original_message_received(data)
+        p_rx.messageReceived = status_rx_message_received
+        log.msg('StatusManager: Integraton complete')
+    # ======================================================
 
     rx_socket_path = '%s-rx-%s' % (service_name, os.urandom(4).hex())
     rx_socket = reactor.listenUNIXDatagram(b'\0' + rx_socket_path.encode(), p_rx)
