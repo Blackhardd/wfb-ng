@@ -36,6 +36,7 @@ from .common import abort_on_crash, exit_status, df_sleep, search_attr
 from .protocols import AntStatsAndSelector, RFTempMeter, SSHClientProtocol, MsgPackAPIFactory, JSONAPIFactory, notify_ready
 from .services import parse_services, init_udp_direct_tx, init_udp_direct_rx, init_mavlink, init_tunnel, init_udp_proxy, hash_link_domain, bandwidth_map
 from .cluster import parse_cluster_services, gen_cluster_scripts
+from .manager import ManagerFactory
 from .conf import settings, cfg_files
 
 
@@ -209,7 +210,6 @@ def init(profiles, wlans, cluster_mode):
             if (txpower[wlan] if isinstance(txpower, dict) else txpower) == 'off':
                 rx_only_wlan_ids.add(idx)
 
-
     sockets = []
     cleanup_l = []
 
@@ -257,6 +257,15 @@ def init(profiles, wlans, cluster_mode):
 
         link_id = hash_link_domain(profile_cfg.link_domain)
 
+        # Создаю пустой менеджер что бы при условиях не было ошибки
+        manager = None
+        if settings.common.manager_port:
+            try:
+                manager = ManagerFactory.create(profile, profile_cfg, wlans)
+                cleanup_l.append(manager)
+            except ValueError as e:
+                log.msg(e, level="warning")
+
         if profile_cfg.stats_port:
             p_f = MsgPackAPIFactory(ant_sel_f.ui_sessions, is_cluster, cli_title)
             sockets.append(reactor.listenTCP(profile_cfg.stats_port, p_f))
@@ -267,9 +276,15 @@ def init(profiles, wlans, cluster_mode):
 
         for service_name, service_type, srv_cfg in service_list:
             log.msg('Starting %s/%s@%s' % (profile, service_name, profile_cfg.link_domain))
-            dl.append(defer.maybeDeferred(type_map[service_type], service_name, srv_cfg,
-                                          srv_cfg.udp_peers_auto if is_cluster else wlans,
-                                          link_id, ant_sel_f, is_cluster, rx_only_wlan_ids))
+            # StatusManager - Передаем manager в init_mavlink для работы с отслеживанием дрона
+            service_args = [service_name, srv_cfg,
+                            srv_cfg.udp_peers_auto if is_cluster else wlans,
+                            link_id, ant_sel_f, is_cluster, rx_only_wlan_ids]
+            
+            if service_type == 'mavlink' and hasattr(manager, 'status_manager') and manager.status_manager:
+                service_args.append(manager)
+                
+            dl.append(defer.maybeDeferred(type_map[service_type], *service_args))
 
 
     notify_ready()

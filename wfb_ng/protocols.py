@@ -17,12 +17,13 @@
 #   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 #
 
-import sys
 import msgpack
 import os
 import time
+import re
 import json
 
+from math import ceil
 from itertools import groupby
 from copy import deepcopy
 from twisted.python import log, failure
@@ -89,6 +90,19 @@ class StatisticsJSONProtocol(LineReceiver):
     def connectionLost(self, reason):
         self.factory.ui_sessions.remove(self)
 
+    @staticmethod
+    def percentile_from_hist(counts, p, min_db, bin_db):
+        total = sum(counts)
+        if total <= 0:
+            return None
+        rank = ceil((p/100.0)*total)
+        acc = 0
+        for i, c in enumerate(counts):
+            acc += c
+            if acc >= rank:
+                return min_db + i*bin_db + bin_db/2.0
+        return min_db + (len(counts)-1)*bin_db + bin_db/2.0
+
     def send_stats(self, data):
         data = dict(data)
 
@@ -97,6 +111,7 @@ class StatisticsJSONProtocol(LineReceiver):
             va = ('pkt_recv', 'rssi_min', 'rssi_avg', 'rssi_max', 'snr_min', 'snr_avg', 'snr_max')
             data['rx_ant_stats'] = list(dict(zip(ka + va, (ant_id,) + k + v))
                                         for (k, ant_id), v in data.pop('rx_ant_stats').items())
+
         elif data['type'] == 'tx':
             ka = ('ant',)
             va = ('pkt_sent', 'pkt_drop', 'lat_min', 'lat_avg', 'lat_max')
@@ -374,7 +389,6 @@ class AntStatsAndSelector(object):
                               rf_temperature=rf_temperature))
 
 
-
 class RXAntennaProtocol(LineReceiver):
     delimiter = b'\n'
 
@@ -396,6 +410,11 @@ class RXAntennaProtocol(LineReceiver):
         try:
             if len(cols) < 2:
                 raise BadTelemetry()
+            
+            # Telemetry packet structure:
+            # [0]       TIMESTAMP_MS
+            # [1]       COMMAND
+            # [2...N]   PAYLOAD
 
             #ts = int(cols[0])
             cmd = cols[1]
@@ -403,7 +422,20 @@ class RXAntennaProtocol(LineReceiver):
             if cmd == 'RX_ANT':
                 if len(cols) != 5:
                     raise BadTelemetry()
-                self.ant[(tuple(int(i) for i in cols[2].split(':')), int(cols[3], 16))] = tuple(int(i) for i in cols[4].split(':'))
+                
+                # Payload structure:
+                # [0] - MEASUREMENTS_COUNT
+                # [1] - RSSI_MIN
+                # [2] - RSSI_AVG
+                # [3] - RSSI_MAX
+                # [5] - SNR_MIN
+                # [6] - SNR_AVG
+                # [7] - SNR_MAX
+                payload = cols[4].split(':', 10)
+
+                stats = tuple(int(i) for i in payload)
+
+                self.ant[(tuple(int(i) for i in cols[2].split(':')), int(cols[3], 16))] = stats
 
             elif cmd == 'PKT':
                 if len(cols) != 3:

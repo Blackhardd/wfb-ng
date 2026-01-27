@@ -22,7 +22,8 @@ import struct
 import time
 
 from . import call_and_check_rc
-from .mavlink import MAV_MODE_FLAG_SAFETY_ARMED, MAVLINK_MSG_ID_HEARTBEAT, mavlink_map
+from .mavlink import MAV_MODE_FLAG_SAFETY_ARMED, MAVLINK_MSG_ID_HEARTBEAT, \
+    MAVLINK_MSG_ID_COMMAND_LONG, MAVLINK_MSG_ID_COMMAND_INT, mavlink_map, enums
 
 from zope.interface import implementer
 from twisted.python import log
@@ -137,9 +138,10 @@ def mavlink_parser_gen(parse_l2=False):
 
 
 class MavlinkARMProtocol(object):
-    def __init__(self, call_on_arm, call_on_disarm):
+    def __init__(self, call_on_arm, call_on_disarm, status_manager=None):
         self.call_on_arm = call_on_arm
         self.call_on_disarm = call_on_disarm
+        self.status_manager = status_manager  # StatusManager для отслеживания статуса
         self.armed = None
         self.locked = False
         self.mavlink_fsm = mavlink_parser_gen(parse_l2=True)
@@ -151,6 +153,33 @@ class MavlinkARMProtocol(object):
 
     def messageReceived(self, l2_headers, message):
         seq, sys_id, comp_id, msg_id = l2_headers
+
+        # Sander 24.01.2026: Логирование всех команд от GCS и моментальная реакция на ARM/DISARM
+        if msg_id in (MAVLINK_MSG_ID_COMMAND_LONG, MAVLINK_MSG_ID_COMMAND_INT):
+            try:
+                msgname, fmap = unpack_mavlink(msg_id, message)
+                cmd_id = fmap.get('command')
+                cmd_name = "UNKNOWN"
+                try:
+                    cmd_name = enums['MAV_CMD'][cmd_id].name
+                except (KeyError, AttributeError):
+                    cmd_name = f"CMD#{cmd_id}"
+                
+                log.msg(f'Alarm! MavlinkARMProtocol, command: [sys:{sys_id} comp:{comp_id}]: {cmd_name} ({cmd_id})')
+                
+                # Моментальная реакция на команду arm/disarm (не дожидаясь heartbeat от дрона)
+                if cmd_id == 400: # MAV_CMD_COMPONENT_ARM_DISARM
+                    param1 = fmap.get('param1')
+                    if param1 == 1.0:
+                        log.msg("Atention: MavlinkARMProtocol, command - мгновенная команда ARM")
+                        if self.status_manager:
+                            self.status_manager.on_arm_command()
+                    elif param1 == 0.0:
+                        log.msg("Atention: MavlinkARMProtocol, command - мгновенная команда DISARM")
+                        if self.status_manager:
+                            self.status_manager.on_disarm_command()
+            except Exception as e:
+                log.msg(f"Error: MavlinkARMProtocol, parsing command: {e}")
 
         if (sys_id, comp_id, msg_id) != (1, 1, MAVLINK_MSG_ID_HEARTBEAT):
             return
@@ -174,11 +203,17 @@ class MavlinkARMProtocol(object):
         cmd = None
 
         if armed:
-            log.msg('State change: ARMED')
+            log.msg('Atention: MavlinkARMProtocol, command - State change: ARMED')
             cmd = self.call_on_arm
+            # StatusManager - о команде arm
+            if self.status_manager:
+                self.status_manager.on_arm_command()
         else:
-            log.msg('State change: DISARMED')
+            log.msg('Atention: MavlinkARMProtocol, command - State change: DISARMED')
             cmd = self.call_on_disarm
+            # StatusManager - о команде disarm
+            if self.status_manager:
+                self.status_manager.on_disarm_command()
 
         def on_err(f):
             log.msg('Command exec failed: %s' % (f.value,), isError=1)

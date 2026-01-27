@@ -23,6 +23,7 @@ import ast
 import copy
 import glob
 import os
+import json
 
 from twisted.python import log
 
@@ -46,6 +47,46 @@ class Settings(object):
 
     def __deepcopy__(self, memo):
         return copy.deepcopy(self.__dict__, memo)
+    
+    def _to_ini_literal(self, value):
+        if value is None or value == "None":
+            return None
+        if isinstance(value, str):
+            return json.dumps(value, ensure_ascii=False)
+        return repr(value)
+    
+    def _write(self, fp):
+        config = configparser.ConfigParser()
+        for section_name, section_obj in self.__dict__.items():
+            if section_name == "path":
+                continue
+
+            items = {}
+            for key, value in section_obj.__dict__.items():
+                value = self._to_ini_literal(value)
+                if value is not None:
+                    items[key] = value
+            if items:
+                config[section_name] = items
+            print(section_name, items)
+        config.write(fp)
+
+    def has_section(self, section_name):
+        return hasattr(self, section_name)
+
+    def add_section(self, section_name):
+        setattr(self, section_name, Section())
+
+    def get_section(self, section_name):
+        return getattr(self, section_name)
+    
+    def save_to_file(self, fpath):
+        tmp = f"{fpath}.tmp"
+        os.makedirs(os.path.dirname(fpath) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            self._write(f)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, fpath)
 
 
 class Section(object):
@@ -54,6 +95,9 @@ class Section(object):
 
     def __deepcopy__(self, memo):
         return copy.deepcopy(self.__dict__, memo)
+    
+    def set(self, name, value):
+        setattr(self, name, value)
 
 
 def parse_config(basedir, cfg_patterns, interpolate=True):

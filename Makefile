@@ -9,6 +9,7 @@ ifneq ("$(wildcard .git)","")
                     unknown)
     COMMIT ?= $(shell git rev-parse HEAD)
     SOURCE_DATE_EPOCH ?= $(or $(shell git show -s --format="%ct" $(COMMIT)), $(shell date "+%s"))
+    SOURCE_DATE_EPOCH := $(if $(SOURCE_DATE_EPOCH),$(SOURCE_DATE_EPOCH),$(shell date "+%s"))
     VERSION ?= $(shell $(PYTHON) ./version.py $(SOURCE_DATE_EPOCH) $(RELEASE))
 else
     COMMIT ?= release
@@ -45,7 +46,7 @@ src/%.o: src/%.c src/*.h
 	$(CC) $(_CFLAGS) -std=gnu99 -c -o $@ $<
 
 src/%.o: src/%.cpp src/*.hpp src/*.h
-	$(CXX) $(_CFLAGS) -std=gnu++11 -c -o $@ $<
+	$(CXX) $(_CFLAGS) -std=gnu++17 -c -o $@ $<
 
 wfb_rx: src/rx.o src/radiotap.o src/zfex.o src/wifibroadcast.o
 	$(CXX) -o $@ $^ $(_LDFLAGS) -lpcap

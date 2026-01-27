@@ -121,9 +121,11 @@ public:
     int32_t rssi_sum;
     int8_t rssi_min;
     int8_t rssi_max;
+
     int32_t snr_sum;
     int8_t snr_min;
     int8_t snr_max;
+
 };
 
 struct rxAntennaKey
