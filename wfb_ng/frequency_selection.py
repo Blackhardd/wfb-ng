@@ -135,6 +135,7 @@ class Channel():
             'mavlink': [],
             'tunnel': [],
         }
+        self._switched_at = 0  # Time when we switched to this channel
 
         self._on_score_updated = None
 
@@ -257,7 +258,20 @@ class Channel():
     def score(self):
         return self._score[-1]
     
-    def is_dead(self):
+    def is_dead(self, grace_seconds=3):
+        """Check if channel is dead (PER=100%), with grace period after switching.
+        
+        Args:
+            grace_seconds: Grace period after channel switch (default 3s).
+                          During this time, is_dead() returns False even if PER=100%
+                          to avoid false recovery hops right after switching.
+        """
+        # Grace period: don't declare dead immediately after switching
+        if self._switched_at > 0:
+            time_since_switch = time.time() - self._switched_at
+            if time_since_switch < grace_seconds:
+                return False
+        
         return self.per() == 100
     
     def add_measurement(self, rx_id, stats):
@@ -276,6 +290,16 @@ class Channel():
 
     def set_on_score_updated(self, callback):
         self._on_score_updated = callback
+
+    def clear_measurements(self):
+        """Clear all measurements to avoid stale stats after channel switch."""
+        self._measurements = {
+            'video': [],
+            'mavlink': [],
+            'tunnel': [],
+        }
+        # Mark the time we switched to this channel (for grace period in is_dead)
+        self._switched_at = time.time()
 
 class ChannelsFactory:
     @classmethod
@@ -332,6 +356,24 @@ class Channels:
             self._index = 0
         return self.current()
 
+    def next_channel(self):
+        """Return the next channel without changing _index (no state mutation)."""
+        next_index = (self._index + 1) % len(self._list)
+        return self._list[next_index]
+
+    def set_current(self, channel):
+        """Set _index to the channel we actually switched to (after successful iw)."""
+        for i, c in enumerate(self._list):
+            if c is channel:
+                self._index = i
+                return
+        # fallback: match by freq if channel is from by_freq()
+        freq = channel.freq() if hasattr(channel, 'freq') else channel
+        for i, c in enumerate(self._list):
+            if c.freq() == freq:
+                self._index = i
+                return
+
     def best(self):
         best_chan = max(self._list, key=lambda chan: chan.score())
         return best_chan
@@ -359,11 +401,10 @@ class Channels:
         if not self.freqsel.manager.get_type() == "drone":
             return
 
-        # Check channels average score and decide on hopping
-        if self.avg_score() > 60:
-            # Only hop if the current channel score is low
-            if channel.per() >= 15 or channel.score() < 50:
-                self.freqsel.hop()
+        # Hop based on current channel quality only (not avg_score)
+        # PER >= 10% or score < 50 indicates degraded channel
+        if channel.per() >= 10 or channel.score() < 50:
+            self.freqsel.hop()
         elif self.freqsel.is_hop_timed_out(30):
             self.freqsel.hop()
 
@@ -420,12 +461,19 @@ class FrequencySelection:
 
         return action_time
 
+    @defer.inlineCallbacks
     def do_hop(self, channel=None):
-        chan = channel
-        if not chan:
-            chan = self.channels.next()
+        # Always work with Channel object (not raw frequency)
+        target_channel = channel if channel else self.channels.next_channel()
 
-        if chan.freq() == self.channels.current().freq():
+        # Fix 5: Validate target_channel
+        if not target_channel or not isinstance(target_channel, Channel):
+            log.msg("ERROR: Invalid target_channel in do_hop, aborting")
+            self._is_scheduled_hop = False
+            self._is_scheduled_recovery_hop = False
+            return
+
+        if target_channel.freq() == self.channels.current().freq():
             log.msg("Already on the selected channel, skipping hop.")
             self._is_scheduled_hop = False
             self._is_scheduled_recovery_hop = False
@@ -436,20 +484,35 @@ class FrequencySelection:
             log.msg("Recovery channel hop cancelled because the link is alive")
             return
         
-        if isinstance(chan, Channel):
-            freq = chan.freq()
-            score = chan.score()
-        else:
-            freq = chan
-            score = 100
+        freq = target_channel.freq()
+        score = target_channel.score()
         
-        log.msg(f"Hopping to channel {freq}{' MHz' if freq > 2000 else ''} with previous score {score:.2f}")
+        # Fix 3: Log before hop with current state
+        current = self.channels.current()
+        log.msg(f"[HOP START] From: ch_idx={self.channels._index} freq={current.freq()}{' MHz' if current.freq() > 2000 else ''} -> To: freq={freq}{' MHz' if freq > 2000 else ''} (prev_score={score:.2f})")
         
-        for wlan in self.manager.wlans:
-            call_and_check_rc("iw", "dev", wlan, "set", "freq" if freq > 2000 else "channel", str(freq))
+        # Fix 1: Check iw success for all wlans (critical)
+        try:
+            for wlan in self.manager.wlans:
+                yield call_and_check_rc("iw", "dev", wlan, "set", "freq" if freq > 2000 else "channel", str(freq))
+        except Exception as e:
+            log.msg(f"ERROR: Failed to switch frequency on hardware: {e}")
+            log.msg("State NOT updated - still on the old channel to avoid desync")
+            self._is_scheduled_hop = False
+            self._is_scheduled_recovery_hop = False
+            return
 
-        # Update last hop time
+        # Sync code state with hardware: _index must match the channel we actually switched to
+        self.channels.set_current(target_channel)
+
+        # Fix 2: Clear measurements on the new channel to avoid stale stats
+        target_channel.clear_measurements()
+
+        # Update last hop time (used for grace period in is_dead)
         self._last_hop_time = time.time()
+
+        # Fix 3: Log after hop with new state
+        log.msg(f"[HOP DONE] Now: ch_idx={self.channels._index} freq={target_channel.freq()}{' MHz' if freq > 2000 else ''}")
 
         self._is_scheduled_hop = False
         self._is_scheduled_recovery_hop = False
@@ -464,9 +527,9 @@ class FrequencySelection:
         
         channel = self.channels.reserve()
         
-        # If already on the reserve channel, pick the next one
+        # If already on the reserve channel, pick the next one (without changing _index)
         if self.channels.current().freq() == channel.freq():
-            channel = self.channels.next()
+            channel = self.channels.next_channel()
 
         self._is_scheduled_recovery_hop = True
 
