@@ -234,6 +234,10 @@ class DroneManager(Manager):
     def __init__(self, config, wlans):
         super().__init__(config, wlans)
 
+        # Create management client to send commands to GS
+        self.client_f = ManagerJSONClientFactory(self)
+        reactor.connectTCP("10.5.0.1", 14889, self.client_f)
+
         # Create and start management server
         self.server_f = ManagerJSONServerFactory(self)
         reactor.listenTCP(14888, self.server_f)
