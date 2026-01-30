@@ -192,7 +192,7 @@ class GSManager(Manager):
         super().__init__(config, wlans)
         
         ##### Sander 23.01.2026 Для понимания работы устройства. StatusManager только для GS
-        self.status_manager = StatusManager(config, wlans)
+        self.status_manager = StatusManager(config, wlans, manager=self)
 
         # Create management client
         self.client_f = ManagerJSONClientFactory(self)
@@ -234,6 +234,10 @@ class DroneManager(Manager):
     def __init__(self, config, wlans):
         super().__init__(config, wlans)
 
+        # Create management client to send commands to GS
+        self.client_f = ManagerJSONClientFactory(self)
+        reactor.connectTCP("10.5.0.1", 14889, self.client_f)
+
         # Create and start management server
         self.server_f = ManagerJSONServerFactory(self)
         reactor.listenTCP(14888, self.server_f)
@@ -273,13 +277,14 @@ class StatusManager:
     PACKET_TIMEOUT = 10.0  # Таймаут для определения потери связи
     DISARM_TIMEOUT = 10.0  # Таймаут после disarm для перехода в offline
     
-    def __init__(self, config, wlans):
+    def __init__(self, config, wlans, manager=None):
         self._last_packet_time = None # Время = когда был последний пакет
         self._last_disarm_time = None # Время = когда был последний дизарм
         self._current_status = self.STATUS_OFFLINE # Текущий статус борта 
         self._status_change_callback = None # Калбе для уведомлений изменения статуса
         self._status_check_task = task.LoopingCall(self._check_status) # Задаем задачу для пееродического обновления инфы статуса
         self._status_check_task.start(1.0)  # Проверка каждую секунду
+        self._manager = manager  # Ссылка на manager для доступа к freqsel
         
         log.msg("Good: StatusManager - init & start")
     
@@ -311,6 +316,8 @@ class StatusManager:
         """
         self._last_disarm_time = time.time() # Запоминаем время команды дизарм
         log.msg("Atention: StatusManager - disarm command received")
+        if self._manager and hasattr(self._manager, 'freqsel'):
+            self._manager.freqsel.reset_all_channels_stats()
     
     def _check_status(self):
         """
@@ -400,6 +407,11 @@ class StatusManager:
             if time_since_disarm is not None:
                 log_msg += f" | Время дизарма: ={time_since_disarm:.1f}s"
             log.msg(log_msg)
+            
+            # Сбрасываем статистику frequency selection при переходе в offline
+            if new_status == self.STATUS_OFFLINE:
+                if self._manager and hasattr(self._manager, 'freqsel'):
+                    self._manager.freqsel.reset_all_channels_stats()
             
             if self._status_change_callback:
                 try:

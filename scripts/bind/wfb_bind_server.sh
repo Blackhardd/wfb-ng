@@ -30,7 +30,7 @@ update_common_section()
             print
             next
         }
-        /^\[/ && in_common { 
+        /^\[[a-zA-Z_][a-zA-Z0-9_]*\]/ && in_common { 
             exit
         }
         in_common { 
@@ -46,7 +46,7 @@ update_common_section()
             found_common = 1
             next
         }
-        /^\[/ && in_common { 
+        /^\[[a-zA-Z_][a-zA-Z0-9_]*\]/ && in_common { 
             in_common = 0
             print
             next
@@ -63,6 +63,22 @@ update_common_section()
     if [ -s "$common_section" ] && [ "$(tail -c 1 "$common_section")" != "" ]; then
         echo "" >> "$common_section"
     fi
+    
+    # Check if common_section is empty (should not happen)
+    if [ ! -s "$common_section" ]; then
+        echo "Warning: common section is empty, keeping existing config" >&2
+        rm -f "$tmp_cfg" "$common_section"
+        return
+    fi
+    
+    # Check if tmp_cfg is empty (should not happen)
+    if [ ! -s "$tmp_cfg" ]; then
+        echo "Warning: existing config is empty, using only new common section" >&2
+        cp "$common_section" "$existing_cfg"
+        rm -f "$tmp_cfg" "$common_section"
+        return
+    fi
+    
     cat "$common_section" "$tmp_cfg" > "$existing_cfg"
 
     rm -f "$tmp_cfg" "$common_section"
