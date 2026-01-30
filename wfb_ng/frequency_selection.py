@@ -650,3 +650,16 @@ class FrequencySelection:
         if interval is None:
             interval = 1.0
         return time.time() + interval
+    
+    def reset_all_channels_stats(self):
+        log.msg("Сброс статистики.Проверка: офлайн? дизарм?")
+        for channel in self.channels.all():
+            channel.clear_measurements()
+            channel._became_dead_at = 0
+            channel._score = [100]
+        
+        # Сбрасываем флаги и таймеры
+        self._is_scheduled_hop = False
+        self._is_scheduled_recovery_hop = False
+        self._link_established_first_time = False
+        self._last_hop_time = time.time()
