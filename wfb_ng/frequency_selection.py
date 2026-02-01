@@ -293,7 +293,14 @@ class Channel():
                         return True
         return False
     
-    def is_dead(self, grace_seconds=3):
+    def has_any_measurements(self):
+        """Проверка что есть хоть какие-то измерения (даже с нулевыми пакетами)"""
+        for meas in self._measurements.values():
+            if len(meas) > 0:
+                return True
+        return False
+    
+    def is_dead(self, grace_seconds=5):
         current_per = self.per()
         
         # Если PER не 100%, канал жив - сбрасываем таймер
@@ -304,7 +311,13 @@ class Channel():
         # PER = 100%, проверяем отложенный период
         current_time = time.time()
         
-        # Отоложенный период после переключения канала
+        # Защита: требуем минимум измерений перед объявлением канала мертвым
+        MIN_MEASUREMENTS = 3  # Уменьшил с 5 до 3 для более быстрой реакции
+        total_measurements = sum(len(m) for m in self._measurements.values())
+        if total_measurements < MIN_MEASUREMENTS:
+            return False  # Недостаточно данных для решения о dead
+        
+        # Отложенный период после переключения канала
         if self._switched_at > 0:
             time_since_switch = current_time - self._switched_at
             if time_since_switch < grace_seconds:
@@ -322,6 +335,7 @@ class Channel():
             return False
         
         # Канал не о чем достаточно долго
+        log.msg(f"Channel {self._freq} confirmed dead after {time_since_dead:.1f}s")
         return True
     
     def add_measurement(self, rx_id, stats):
@@ -342,7 +356,17 @@ class Channel():
         self._on_score_updated = callback
 
     def clear_measurements(self):
-        self._measurements.clear()  # Используем метод dataclass
+        # Защита: сохраняем последние измерения при переключении канала
+        KEEP_HISTORY = 5        
+        # Обрезаем каждый поток до последних KEEP_HISTORY измерений
+        for stream in [self._measurements.video, self._measurements.mavlink, self._measurements.tunnel]:
+            if len(stream) > KEEP_HISTORY:
+                stream[:] = stream[-KEEP_HISTORY:]
+        
+        # Обрезаем историю score тоже
+        if len(self._score) > KEEP_HISTORY:
+            self._score = self._score[-KEEP_HISTORY:]
+        
         self._switched_at = time.time()
         self._became_dead_at = 0  # Сбрасываем таймер фигового канала при переключении
 
@@ -451,15 +475,25 @@ class Channels:
             
             return  # Блокируем ВСЕ hop пока связь не установлена
         
-        # Система готова к hop - нормальная логика переключения
+        # Защита: минимальное время на канале перед принятием решений о переключении
+        # Это предотвращает бесконечные циклы hop из-за недостатка статистики,стабилизируем
+        MIN_TIME_ON_CHANNEL = 5.0
+        time_on_channel = time.time() - channel._switched_at
+        
+        if time_on_channel < MIN_TIME_ON_CHANNEL:
+            # Слишком рано срабатывания - оставляем время накопить статистику
+            return
+        
+        # Есть готовность, продолжаем логику в норм состоянии
         if channel.is_dead():
             self.freqsel.schedule_recovery_hop()
             return
         
-        if channel.per() >= 10 or channel.score() < 50:
+        # Защита и Условие порог PER & оценка канала
+        if channel.per() >= 20 or channel.score() < 50:
             self.freqsel.hop()
-        elif self.freqsel.is_hop_timed_out(30) and channel.score() < 100:
-            # Периодически проверяем другие каналы, если текущий не идеальный
+        elif self.freqsel.is_hop_timed_out(30) and channel.score() < 80:
+            # HOP механизм: переключения если канал плохой
             self.freqsel.hop()
 
 class FrequencySelection:
@@ -474,6 +508,7 @@ class FrequencySelection:
 
         self._startup_time = time.time()  # Время запуска гс или дрона
         self._last_hop_time = self._startup_time  # Инициализируем текущим временем, чтобы избежать немедленного hop
+        self._last_hop_request_time = 0  # Время последнего hop запроса (защита от спама)
         self._startup_grace_period = 20.0  # Период ожидания20 секунд
         self._last_not_ready_log_time = 0  # Время последнего лога "not ready" (защита от спама)
         self._link_established_first_time = False  # Флаг первого установления связи
@@ -511,7 +546,23 @@ class FrequencySelection:
             
             # Если связь установлена, можем hop даже во время ожидания
             return True   
-        # Если связи нет - ждем окончания периода ожидания
+        
+        # НОВАЯ ЛОГИКА: если связь была установлена хоть раз, разрешаем hop
+        # даже если сейчас она потеряна (для recovery hop)
+        if self._link_established_first_time:
+            return True
+        
+        # Если связи никогда не было - ждем окончания периода ожидания
+        # ИЛИ проверяем что есть хоть какие-то измерения
+        if not self.is_in_startup_grace_period():
+            # Grace period прошел, но связи не было
+            # Проверяем есть ли хоть какие-то измерения на текущем канале
+            current_channel = self.channels.current()
+            if current_channel.has_any_measurements():
+                # Есть измерения, значит система работает, можем пробовать hop
+                log.msg("Grace period expired, no link but have measurements, allowing hop")
+                return True
+        
         return False
     
     def is_hop_timed_out(self, timeout):
@@ -527,16 +578,33 @@ class FrequencySelection:
             log.msg("Hop already scheduled, skipping new hop request")
             return
         
+        # Защита: минимальный интервал между hop запросами
+        # Это предотвращает спам команд при потере связи
+        current_time = time.time()
+        time_since_last_request = current_time - self._last_hop_request_time
+        MIN_HOP_INTERVAL = 3.0  # 3 секунды между запросами
+        
+        if self._last_hop_request_time > 0 and time_since_last_request < MIN_HOP_INTERVAL:
+            log.msg(f"Hop request too soon ({time_since_last_request:.1f}s < {MIN_HOP_INTERVAL}s), skipping")
+            return
+        
+        self._last_hop_request_time = current_time
+        
         log.msg(f"[HOP REQUEST] Initiating hop from {self.manager.get_type()}")
         
         if not hasattr(self.manager, 'client_f'):
             log.msg("ERROR: Manager has no client_f, cannot send hop command")
             return
         
+        # Защита: устанавливаем флаг сразу при отправке команды
+        # Это предотвращает повторные hop пока ждем ответа
+        self._is_scheduled_hop = True
+        
         d = self.manager.client_f.send_command({"command": "freq_sel_hop"})
         
         if d is None:
             log.msg("ERROR: send_command returned None, connection not ready")
+            self._is_scheduled_hop = False  # Сбрасываем флаг если команда не отправилась
             return
         
         d.addCallback(self._on_hop_response)
@@ -549,9 +617,13 @@ class FrequencySelection:
             self.schedule_hop(action_time)
         else:
             log.msg("ERROR: No 'time' in hop response, cannot schedule")
+            # Защита: сбрасываем флаг если не получили время для планирования
+            self._is_scheduled_hop = False
     
     def _on_hop_error(self, err):
         log.msg(f"[HOP ERROR] Failed to send hop command: {err}")
+        # Защита: сбрасываем флаг при ошибке, чтобы разрешить следующую попытку
+        self._is_scheduled_hop = False
 
     def schedule_hop(self, action_time=None):
         if not self.is_enabled():
