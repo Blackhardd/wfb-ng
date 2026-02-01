@@ -12,13 +12,61 @@ from . import call_and_check_rc
 from .conf import settings
 
 
+# ==================== НАСТРОЙКИ FREQUENCY SELECTION ====================
+
+# --- Настройки расчёта Score ---
+SCORE_FRAMES = 3              # Количество фреймов для усреднения
+SCORE_PER_WEIGHT = 75         # Вес PER в итоговом score (0-100)
+SCORE_SNR_WEIGHT = 25         # Вес SNR в итоговом score (0-100)
+SCORE_PER_MAX_PENALTY = 10    # При каком PER максимальный штраф (%)
+SCORE_SNR_MIN_THRESHOLD = 20  # Ниже какого SNR максимальный штраф (dB)
+
+# --- Настройки триггеров HOP ---
+HOP_PER_THRESHOLD = 20        # HOP при PER >= 20%
+HOP_SCORE_THRESHOLD = 50      # HOP при score < 50
+HOP_TIMEOUT_SECONDS = 30      # Таймаут нахождения на канале (сек)
+HOP_TIMEOUT_SCORE = 80        # При таймауте HOP если score < 80
+
+# --- Защиты от ложных срабатываний ---
+HOP_MIN_TIME_ON_CHANNEL = 5.0     # Минимум 5 сек на канале перед HOP
+HOP_MIN_INTERVAL = 3.0            # Минимум 3 сек между hop запросами
+CHANNEL_MIN_MEASUREMENTS = 3      # Минимум фреймов для определения dead channel
+CHANNEL_KEEP_HISTORY = 5          # Сколько последних измерений сохранять при hop
+
+# --- Настройки определения offline/dead ---
+DRONE_OFFLINE_THRESHOLD = 30.0    # Через сколько секунд без пакетов дрон считается offline
+CHANNEL_DEAD_GRACE_PERIOD = 5     # Период ожидания перед объявлением канала мёртвым
+# После стольких секунд без пакетов переходим на reserve (wifi_channel),
+# чтобы при перезапуске дрона (он стартует на wifi_channel) GS был на том же канале
+OFFLINE_HOP_TO_RESERVE_AFTER = 120.0  # сек (2 мин)
+
+# --- Настройки startup ---
+STARTUP_GRACE_PERIOD = 20.0       # Период ожидания связи при старте
+
+# =======================================================================
+
+
 class Utils:
     @staticmethod
     def clamp(n, min_val, max_val):
         return max(min_val, min(n, max_val))
+    
+    @staticmethod
+    def safe_counter_diff(current, previous):
+        """ current: текущее значение счётчикаprevious: предыдущее значение счётчика """
+        diff = current - previous
+        if diff < 0:
+            # Переполнение счётчика или сброс - берём абсолютное значение
+            return current
+        return diff
 
 def avg_db_snr(snr_list):
-    
+    """
+    Усреднение SNR в dB через линейную область
+    1. Переводим каждый SNR из dB в линейную область (10^(snr/10))
+    2. Усредняем в линейной области
+    3. Перевести обратно в dB (10*log10)
+    """
     if not snr_list or not snr_list[0]:
         return 0
 
@@ -26,25 +74,28 @@ def avg_db_snr(snr_list):
     n = 0
     for row in snr_list:
         for snr_db in row:
-            s += 10 ** (snr_db / 10)
-            n += 1
+            if snr_db > 0:  # Фильтруем нулевые значения
+                s += 10 ** (snr_db / 10)
+                n += 1
+
+    if n == 0:
+        return 0
 
     avg_lin = s / n
-
     return 10.0 * math.log10(avg_lin)
 
-@dataclass # Тип данных для хранения статистики измерений
+@dataclass # Храним измерения по потокам 
 class MeasurementStats:
     p_total: int
     p_bad: int
     rssi: int
     snr: int
 
-@dataclass # Контейнер для хранения измерений по типам потоков
+@dataclass # Храним измерения по типам потоков
 class ChannelMeasurements:
-    video: list      # Список для видео(поток видео,в H265 или H264)
-    mavlink: list    # Список для mavlink(телеметрия)
-    tunnel: list     # Список для туннеля(хз что в нем)
+    video: list   
+    mavlink: list
+    tunnel: list
     
     def __init__(self):
         self.video = []
@@ -139,23 +190,29 @@ class StatsFactory(ReconnectingClientFactory):
         rx_id = str(rx_id).replace(" rx", "")
         
         if session is not None:
-            rssi = round(sum(v[2] for v in rx_ant_stats.values()) / len(rx_ant_stats)) if rx_ant_stats else 0
-            snr = round(sum(v[5] for v in rx_ant_stats.values()) / len(rx_ant_stats)) if rx_ant_stats else 0
+            # Округляем до целых чисел для RSSI и SNR
+            rssi = int(round(sum(v[2] for v in rx_ant_stats.values()) / len(rx_ant_stats))) if rx_ant_stats else 0
+            snr = int(round(sum(v[5] for v in rx_ant_stats.values()) / len(rx_ant_stats))) if rx_ant_stats else 0
 
             if rx_id not in self._prev:
+                # Первое измерение - берём абсолютные значения
                 p_total = packets['all'][1]
                 p_bad = packets['lost'][1] + packets['dec_err'][1]
             else:
-                p_total_diff   = packets['all'][1]     - self._prev[rx_id]['packets']['all'][1]
-                p_lost_diff    = packets['lost'][1]    - self._prev[rx_id]['packets']['lost'][1]
-                p_dec_err_diff = packets['dec_err'][1] - self._prev[rx_id]['packets']['dec_err'][1]
-                
-                if p_total_diff < 0:
-                    p_total = packets['all'][1]
-                    p_bad = packets['lost'][1] + packets['dec_err'][1]
-                else:
-                    p_total = p_total_diff
-                    p_bad = max(0, p_lost_diff) + max(0, p_dec_err_diff)
+                # Обрабатываем "переполнение" 
+                p_total = Utils.safe_counter_diff(
+                    packets['all'][1],
+                    self._prev[rx_id]['packets']['all'][1]
+                )
+                p_lost = Utils.safe_counter_diff(
+                    packets['lost'][1],
+                    self._prev[rx_id]['packets']['lost'][1]
+                )
+                p_dec_err = Utils.safe_counter_diff(
+                    packets['dec_err'][1],
+                    self._prev[rx_id]['packets']['dec_err'][1]
+                )
+                p_bad = p_lost + p_dec_err
 
             self._prev[rx_id] = {
                 'packets': packets.copy(),
@@ -174,20 +231,21 @@ class Channel():
         self._freq = freq
         self._score = [100]
         self._score_update_time = 0
-        self._measurements = ChannelMeasurements()  #Sander: новый dataclass вместо словаря
+        self._measurements = ChannelMeasurements() 
         self._switched_at = 0
         self._became_dead_at = 0  # Время когда канал стал фиговым
+        self._last_packet_time = 0  # Время последнего полученного пакета
 
         self._on_score_updated = None
 
     def _update_score(self):
-        frames = 3
-
-        per = self.per(frames)
-        snr = self.snr(frames)
-
-        pen_per = 75 * Utils.clamp(per / 5, 0.0, 1.0)
-        pen_snr = 25 * Utils.clamp((20 - snr) / 20, 0.0, 1.0)
+        """Обновление score канала на основе PER и SNR"""
+        per = self.per(SCORE_FRAMES)
+        snr = self.snr(SCORE_FRAMES)
+        
+        # Рассчитываем штрафы
+        pen_per = SCORE_PER_WEIGHT * Utils.clamp(per / SCORE_PER_MAX_PENALTY, 0.0, 1.0)
+        pen_snr = SCORE_SNR_WEIGHT * Utils.clamp((SCORE_SNR_MIN_THRESHOLD - snr) / SCORE_SNR_MIN_THRESHOLD, 0.0, 1.0)
 
         self._score.append(100 - (pen_per + pen_snr))
 
@@ -197,16 +255,18 @@ class Channel():
         for rx_id in ['video', 'mavlink', 'tunnel']:
             meas = self._measurements.get(rx_id)
             if meas is not None and len(meas) > 0:
-                p_total = sum(stats.p_total for stats in meas[-frames:])
-                p_bad = sum(stats.p_bad for stats in meas[-frames:])
+                p_total = sum(stats.p_total for stats in meas[-SCORE_FRAMES:])
+                p_bad = sum(stats.p_bad for stats in meas[-SCORE_FRAMES:])
                 
                 rx_label = 'vid' if rx_id == 'video' else ('mk' if rx_id == 'mavlink' else 'tl')
                 packet_info_parts.append(f"{rx_label}: [tot={p_total},bad={p_bad}]")
         
+        packet_info = ""
         if packet_info_parts:
-            packet_info = "PER: {}% {}".format(per, " ".join(packet_info_parts))
-            log.msg(packet_info)
+            packet_info = " ".join(packet_info_parts)
+            log.msg("PER: {}% {}".format(per, packet_info))
 
+        
         self._score_update_time = time.time()
 
         if self._on_score_updated:
@@ -216,15 +276,12 @@ class Channel():
         return self._freq
 
     def per(self, frames=None):
-        per = 0
-
+        """Расчёт PER (Packet Error Rate) по всем rx за последние N фреймов"""
         if frames is None or frames < 1:
             frames = 1
-
-        # Безопасная проверка на пустые измерения
         meas_lengths = [len(meas) for meas in self._measurements.values() if len(meas) > 0]
         if not meas_lengths:
-            return 100 
+            return 100 # нет измерений - нет канала - нет конекта - нет проблем 
         
         max_frames = min(meas_lengths)
         if max_frames < frames:
@@ -234,45 +291,46 @@ class Channel():
         p_bad = 0
 
         for rx_id, meas in self._measurements.items():
-            # Проверка что список не пустой перед доступом к последнему элементу
-            if len(meas) == 0 or meas[-1].p_total == 0:
+            # Пропускаем пустые измерения или измерения без пакетов
+            if len(meas) == 0:
                 continue
-
-            p_total += sum(stats.p_total for stats in meas[-frames:])
-            p_bad += sum(stats.p_bad for stats in meas[-frames:])
+            
+            # Суммируем пакеты за последние N фреймов
+            for stats in meas[-frames:]:
+                if stats.p_total > 0:  # Учитываем только фреймы с пакетами
+                    p_total += stats.p_total
+                    p_bad += stats.p_bad
 
         if p_total > 0:
-            p_bad  = min(p_bad, p_total)
-            per    = round((p_bad / p_total) * 100)
-            per    = Utils.clamp(per, 0, 100)
+            # Защита: p_bad не может быть больше p_total
+            p_bad = min(p_bad, p_total)
+            per = round((p_bad / p_total) * 100)
+            per = Utils.clamp(per, 0, 100)
         else:
-            per = 100
+            per = 100  # Нет пакетов → 100% потерь
 
         return per
 
     def snr(self, frames=None):
-        snr_vals = []
-
+        """Расчёт среднего SNR по всем rx за последние N фреймов"""
         if frames is None or frames < 1:
             frames = 1
         
-        active_meas = []
-        for meas in self._measurements.values():
-            if len(meas) != 0:
-                active_meas.append(meas)
-        if len(active_meas) == 0:
+        # Собираем только непустые измерения
+        active_meas = [meas for meas in self._measurements.values() if len(meas) > 0]
+        if not active_meas:
             return 0
-        min_lengths = []
-        for meas in active_meas:
-            min_lengths.append(len(meas))
         
-        max_frames = min(min_lengths)
+        # Определяем доступное количество фреймов
+        max_frames = min(len(meas) for meas in active_meas)
         if frames > max_frames:
             frames = max_frames
         
+        # Собираем SNR значения, фильтруя нулевые
+        snr_vals = []
         for meas in active_meas:
-            window = [stats.snr for stats in meas[-frames:]]
-            if any(v != 0 for v in window):
+            window = [stats.snr for stats in meas[-frames:] if stats.snr != 0]
+            if window:  # Добавляем только если есть ненулевые значения
                 snr_vals.append(window)
 
         if not snr_vals:
@@ -281,73 +339,95 @@ class Channel():
         return avg_db_snr(snr_vals)
     
     def score(self):
+        # возвращаю оценку канала в диапазоне от нуля до 100-та 
+        if not self._score:
+            return 100
         return self._score[-1]
     
     def has_received_data(self):
-        """Проверка что канал получал хотя бы один пакет (связь была установлена)"""
         for meas in self._measurements.values():
             if len(meas) > 0:
-                # Проверяем что хотя бы одно измерение имело пакеты
+                # проверка на получение пакетов хоть с одного rx_id
                 for stats in meas:
                     if stats.p_total > 0:
                         return True
         return False
     
     def has_any_measurements(self):
-        """Проверка что есть хоть какие-то измерения (даже с нулевыми пакетами)"""
         for meas in self._measurements.values():
             if len(meas) > 0:
                 return True
         return False
     
-    def is_dead(self, grace_seconds=5):
-        current_per = self.per()
+    def is_drone_offline(self, threshold_seconds=DRONE_OFFLINE_THRESHOLD):
+        """
+        Returns:
+            True - дрон никогда не подключался ИЛИ последний пакет >threshold_seconds назад
+            False - дрон активен (последний пакет был недавно)
+        """
+        if not self.has_received_data():
+            return True
         
-        # Если PER не 100%, канал жив - сбрасываем таймер
+        if self._last_packet_time == 0:
+            return True
+        
+        time_since_last_packet = time.time() - self._last_packet_time
+        return time_since_last_packet > threshold_seconds
+    
+    def is_dead(self, grace_seconds=CHANNEL_DEAD_GRACE_PERIOD):
+        """
+        Args:
+            grace_seconds: grace period перед объявлением канала мёртвым
+        """
+        current_per = self.per()  
+        # Защита: Если PER не 100%, канал жив - сбрасываем таймер
         if current_per < 100:
             self._became_dead_at = 0
             return False
-        
-        # PER = 100%, проверяем отложенный период
+        # Защита: проверка на то что дрон давно offline
+        if self.is_drone_offline(threshold_seconds=DRONE_OFFLINE_THRESHOLD):
+            self._became_dead_at = 0
+            return False 
+        # Защита: PER = 100% И дрон БЫЛ активен недавно 
         current_time = time.time()
-        
-        # Защита: требуем минимум измерений перед объявлением канала мертвым
-        MIN_MEASUREMENTS = 3  # Уменьшил с 5 до 3 для более быстрой реакции
+        # Защита: требуем минимум измерений (избегаем ложных срабатываний)
         total_measurements = sum(len(m) for m in self._measurements.values())
-        if total_measurements < MIN_MEASUREMENTS:
-            return False  # Недостаточно данных для решения о dead
-        
-        # Отложенный период после переключения канала
+        if total_measurements < CHANNEL_MIN_MEASUREMENTS:
+            return False   
+        # Защита: после переключения канала даём время на стабилизацию 
         if self._switched_at > 0:
             time_since_switch = current_time - self._switched_at
             if time_since_switch < grace_seconds:
                 return False
-        
-        # Отмечаем время когда канал впервые стал не о чем
         if self._became_dead_at == 0:
             self._became_dead_at = current_time
             log.msg(f"Channel {self._freq} became dead (PER=100%), grace period {grace_seconds}s started")
-            return False  # Не считаем мертвым в первый момент
+            return False
         
-        # Проверяем прошло ли достаточно времени с момента когда канал стал не о чем
+        # Защита: Проверяем истёк ли grace period
         time_since_dead = current_time - self._became_dead_at
         if time_since_dead < grace_seconds:
             return False
         
-        # Канал не о чем достаточно долго
+        # Защита: Канал мертвый достаточно долго - нужен recovery hop
         log.msg(f"Channel {self._freq} confirmed dead after {time_since_dead:.1f}s")
         return True
     
     def add_measurement(self, rx_id, stats):
+        """
+        Добавить измерение для rx_id
+        """
         if not self._measurements.has(rx_id):
             return
         
+        # Защита: Обновляем время последнего пакета если получили данные
+        if stats.p_total > 0:
+            self._last_packet_time = time.time()
+        
         self._measurements.append(rx_id, stats)
 
-        lengths = {
-            k: len(v)
-            for k, v in self._measurements.items()
-        }
+        # Защита: Проверяем синхронизацию, все rx должны иметь одинаковое количество фреймов и измерений
+        lengths = {k: len(v) for k, v in self._measurements.items()}
 
         if len(set(lengths.values())) == 1:
             self._update_score()
@@ -356,16 +436,15 @@ class Channel():
         self._on_score_updated = callback
 
     def clear_measurements(self):
-        # Защита: сохраняем последние измерения при переключении канала
-        KEEP_HISTORY = 5        
-        # Обрезаем каждый поток до последних KEEP_HISTORY измерений
+        """Очистка измерений при переключении канала (с сохранением истории)"""
+        # Обрезаем каждый поток до последних CHANNEL_KEEP_HISTORY измерений
         for stream in [self._measurements.video, self._measurements.mavlink, self._measurements.tunnel]:
-            if len(stream) > KEEP_HISTORY:
-                stream[:] = stream[-KEEP_HISTORY:]
+            if len(stream) > CHANNEL_KEEP_HISTORY:
+                stream[:] = stream[-CHANNEL_KEEP_HISTORY:]
         
         # Обрезаем историю score тоже
-        if len(self._score) > KEEP_HISTORY:
-            self._score = self._score[-KEEP_HISTORY:]
+        if len(self._score) > CHANNEL_KEEP_HISTORY:
+            self._score = self._score[-CHANNEL_KEEP_HISTORY:]
         
         self._switched_at = time.time()
         self._became_dead_at = 0  # Сбрасываем таймер фигового канала при переключении
@@ -454,8 +533,10 @@ class Channels:
         return total_score / len(self._list) if self._list else 0
     
     def on_channel_score_updated(self, channel):
-
-        # Не переключаем каналы пока связь не была установлена хоть 1 раз
+        """
+        Callback при обновлении score канала
+        """
+        # Защита: Не переключаем каналы пока связь не была установлена хоть 1 раз
         if not self.freqsel.is_ready_for_hop():
             # Логируем только раз в 5 секунд
             current_time = time.time()
@@ -463,7 +544,6 @@ class Channels:
             
             if should_log and self.freqsel.is_in_startup_grace_period():
                 elapsed = time.time() - self.freqsel._startup_time
-                remaining = self.freqsel._startup_grace_period - elapsed
                 
                 # Логируем только значимые события
                 if channel.is_dead():
@@ -473,27 +553,42 @@ class Channels:
                     log.msg(f"System not ready for hop: no link established yet (startup {elapsed:.1f}s, PER={channel.per()}%, score={channel.score():.2f})")
                     self.freqsel._last_not_ready_log_time = current_time
             
-            return  # Блокируем ВСЕ hop пока связь не установлена
+            return 
         
-        # Защита: минимальное время на канале перед принятием решений о переключении
-        # Это предотвращает бесконечные циклы hop из-за недостатка статистики,стабилизируем
-        MIN_TIME_ON_CHANNEL = 5.0
+        # Защита: минимальное время на канале перед HOP
         time_on_channel = time.time() - channel._switched_at
-        
-        if time_on_channel < MIN_TIME_ON_CHANNEL:
-            # Слишком рано срабатывания - оставляем время накопить статистику
+        if time_on_channel < HOP_MIN_TIME_ON_CHANNEL:
             return
         
-        # Есть готовность, продолжаем логику в норм состоянии
+        # Защита: Есть готовность, продолжаем логику в норм состоянии
         if channel.is_dead():
             self.freqsel.schedule_recovery_hop()
             return
+        else:
+            # Защита: Канал НЕ мертвый - сбрасываем флаг recovery hop
+            if self.freqsel._is_scheduled_recovery_hop:
+                log.msg("Channel recovered, clearing recovery hop flag")
+                self.freqsel._is_scheduled_recovery_hop = False
         
-        # Защита и Условие порог PER & оценка канала
-        if channel.per() >= 20 or channel.score() < 50:
+        # Долго нет пакетов → переходим на reserve (wifi_channel), дрон при перезапуске стартует там
+        if channel.is_drone_offline(threshold_seconds=OFFLINE_HOP_TO_RESERVE_AFTER):
+            if not self.freqsel._is_scheduled_recovery_hop and not self.freqsel._is_scheduled_hop:
+                log.msg(f"Drone offline >{OFFLINE_HOP_TO_RESERVE_AFTER}s, hopping to reserve (wifi_channel) for reconnect")
+            self.freqsel.schedule_recovery_hop()
+            return
+        
+        # Защита: не пытаемся обычный HOP если дрон недавно offline (< 30 сек)
+        if channel.is_drone_offline(threshold_seconds=DRONE_OFFLINE_THRESHOLD):
+            return
+        
+        # Проверка условий для HOP (триггеры)
+        if channel.per() >= HOP_PER_THRESHOLD:
             self.freqsel.hop()
-        elif self.freqsel.is_hop_timed_out(30) and channel.score() < 80:
+        elif channel.score() < HOP_SCORE_THRESHOLD:
+            self.freqsel.hop()
+        elif self.freqsel.is_hop_timed_out(HOP_TIMEOUT_SECONDS) and channel.score() < HOP_TIMEOUT_SCORE:
             # HOP механизм: переключения если канал плохой
+            time_on_channel = time.time() - self.freqsel._last_hop_time
             self.freqsel.hop()
 
 class FrequencySelection:
@@ -508,14 +603,14 @@ class FrequencySelection:
 
         self._startup_time = time.time()  # Время запуска гс или дрона
         self._last_hop_time = self._startup_time  # Инициализируем текущим временем, чтобы избежать немедленного hop
-        self._last_hop_request_time = 0  # Время последнего hop запроса (защита от спама)
-        self._startup_grace_period = 20.0  # Период ожидания20 секунд
-        self._last_not_ready_log_time = 0  # Время последнего лога "not ready" (защита от спама)
+        self._last_hop_request_time = 0  # Время последнего hop запроса 
+        self._startup_grace_period = STARTUP_GRACE_PERIOD  # Период ожидания связи при старте
+        self._last_not_ready_log_time = 0  # Время последнего лога "not ready" 
         self._link_established_first_time = False  # Флаг первого установления связи
         
         if self.is_enabled():
             startup_channel = self.channels.current().freq()
-            log.msg(f"Frequency selection initialized. Startup channel: {startup_channel}{' MHz' if startup_channel > 2000 else ''}, Grace period: {self._startup_grace_period}s")
+            log.msg(f"Frequency selection initialized. Startup channel: {startup_channel}{' MHz' if startup_channel > 2000 else ''}, Grace period: {STARTUP_GRACE_PERIOD}s")
 
     def is_enabled(self):
         if self.enabled and self.channels.count() > 1:
@@ -542,24 +637,24 @@ class FrequencySelection:
             if not self._link_established_first_time:
                 self._last_hop_time = time.time()
                 self._link_established_first_time = True
-                log.msg("Link established for the first time, hop timer reset")
-            
+                log.msg("Link established for the first time, hop timer reset")       
             # Если связь установлена, можем hop даже во время ожидания
             return True   
         
-        # НОВАЯ ЛОГИКА: если связь была установлена хоть раз, разрешаем hop
-        # даже если сейчас она потеряна (для recovery hop)
+        # если связь была установлена хоть раз, разрешаем hop
         if self._link_established_first_time:
             return True
         
-        # Если связи никогда не было - ждем окончания периода ожидания
-        # ИЛИ проверяем что есть хоть какие-то измерения
+        # Если связи никогда не было - ждем окончания grace period
         if not self.is_in_startup_grace_period():
-            # Grace period прошел, но связи не было
-            # Проверяем есть ли хоть какие-то измерения на текущем канале
             current_channel = self.channels.current()
+            
+            # Если дрон давно offline - НЕ разрешаем HOP 
+            if current_channel.is_drone_offline(threshold_seconds=DRONE_OFFLINE_THRESHOLD):
+                return False
+            
+            # Есть измерения И дрон был активен недавно - можем пробовать hop
             if current_channel.has_any_measurements():
-                # Есть измерения, значит система работает, можем пробовать hop
                 log.msg("Grace period expired, no link but have measurements, allowing hop")
                 return True
         
@@ -578,14 +673,12 @@ class FrequencySelection:
             log.msg("Hop already scheduled, skipping new hop request")
             return
         
-        # Защита: минимальный интервал между hop запросами
-        # Это предотвращает спам команд при потере связи
+        # Защита: минимальный интервал между hop запросами (предотвращает спам)
         current_time = time.time()
         time_since_last_request = current_time - self._last_hop_request_time
-        MIN_HOP_INTERVAL = 3.0  # 3 секунды между запросами
         
-        if self._last_hop_request_time > 0 and time_since_last_request < MIN_HOP_INTERVAL:
-            log.msg(f"Hop request too soon ({time_since_last_request:.1f}s < {MIN_HOP_INTERVAL}s), skipping")
+        if self._last_hop_request_time > 0 and time_since_last_request < HOP_MIN_INTERVAL:
+            log.msg(f"Hop request too soon ({time_since_last_request:.1f}s < {HOP_MIN_INTERVAL}s), skipping")
             return
         
         self._last_hop_request_time = current_time
@@ -595,9 +688,7 @@ class FrequencySelection:
         if not hasattr(self.manager, 'client_f'):
             log.msg("ERROR: Manager has no client_f, cannot send hop command")
             return
-        
-        # Защита: устанавливаем флаг сразу при отправке команды
-        # Это предотвращает повторные hop пока ждем ответа
+
         self._is_scheduled_hop = True
         
         d = self.manager.client_f.send_command({"command": "freq_sel_hop"})
@@ -614,7 +705,11 @@ class FrequencySelection:
         log.msg(f"[HOP RESPONSE] Received: {res}")
         action_time = res.get("time")
         if action_time:
-            self.schedule_hop(action_time)
+            # Планируем HOP с полученным временем 
+            delay = max(0, action_time - time.time())
+            task.deferLater(reactor, delay, self.do_hop)
+            
+            log.msg(f"Frequency hop scheduled to execute in {delay:.2f} seconds")
         else:
             log.msg("ERROR: No 'time' in hop response, cannot schedule")
             # Защита: сбрасываем флаг если не получили время для планирования
@@ -646,20 +741,24 @@ class FrequencySelection:
 
     @defer.inlineCallbacks
     def do_hop(self, channel=None):
+        """Выполнение переключения канала с проверками безопасности"""
         target_channel = channel if channel else self.channels.next_channel()
 
+        # Защита 1: проверка валидности целевого канала
         if not target_channel or not isinstance(target_channel, Channel):
             log.msg("ERROR: Invalid target_channel in do_hop, aborting")
             self._is_scheduled_hop = False
             self._is_scheduled_recovery_hop = False
             return
 
+        # Защита 2: пропуск если уже на целевом канале (избегаем бесполезных переключений)
         if target_channel.freq() == self.channels.current().freq():
             log.msg("Already on the selected channel, skipping hop.")
             self._is_scheduled_hop = False
             self._is_scheduled_recovery_hop = False
             return
 
+        # Защита 3: отмена recovery hop если канал восстановился
         if self._is_scheduled_recovery_hop and not self.channels.current().is_dead():
             self._is_scheduled_recovery_hop = False
             log.msg("Recovery channel hop cancelled because the link is alive")
@@ -695,22 +794,13 @@ class FrequencySelection:
     def schedule_recovery_hop(self):
         if not self.is_enabled():
             return
-
         if self._is_scheduled_recovery_hop or self._is_scheduled_hop:
             return
-        
-        # Fix Comment on line R530 by Sander at 31/01/2025
-        # Возврат к wifi_channel'у из common цфг при потере связи
-        # Это гарантирует синхронизацию между дроном и Ground Station при lost или полной потере PER 100%
-        channel = self.channels.reserve()
-        
-        # Если уже на резервном канале, не переключаемся
-        # Дрон рано или поздно вылетит из зоны помех и связь восстановится
-        if self.channels.current().freq() == channel.freq():
-            log.msg(f"Already on reserve channel {channel.freq()}, recovery hop cancelled")
-            return
-
         self._is_scheduled_recovery_hop = True
+        channel = self.channels.reserve()
+        if self.channels.current().freq() == channel.freq():
+            log.msg(f"Already on reserve channel {channel.freq()}, recovery hop not needed")
+            return
 
         action_time = self.get_action_time()
         delay = max(0, action_time - time.time())
@@ -725,13 +815,14 @@ class FrequencySelection:
     
     def reset_all_channels_stats(self):
         log.msg("Сброс статистики.Проверка: офлайн? дизарм?")
+        
         for channel in self.channels.all():
             channel.clear_measurements()
             channel._became_dead_at = 0
+            channel._last_packet_time = 0
             channel._score = [100]
         
-        # Сбрасываем флаги и таймеры
         self._is_scheduled_hop = False
         self._is_scheduled_recovery_hop = False
-        self._link_established_first_time = False
+
         self._last_hop_time = time.time()

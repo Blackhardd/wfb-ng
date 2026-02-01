@@ -82,8 +82,17 @@ class ManagerJSONClientFactory(ReconnectingClientFactory):
         ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
     
     def send_command(self, command):
+        """
+        Отправить команду через protocol instance
+        
+        Returns:
+            Deferred если соединение готово, None если соединение не установлено
+        """
         if self.protocol_instance:
             return self.protocol_instance.send_command(command)
+        # Соединение не готово - возвращаем None
+        # Вызывающий код должен проверять на None!
+        return None
 
 class ManagerJSONServer(protocol.Protocol):
     def __init__(self, manager):
@@ -209,6 +218,11 @@ class GSManager(Manager):
                 "command": "init",
                 "freq_sel": {"enabled": self.freqsel.is_enabled()}
             })
+            
+            # Защита: send_command может вернуть None если соединение не готово
+            if d is None:
+                log.msg("ERROR: send_command returned None, connection not ready")
+                return
 
             d.addCallback(self.on_connection_ready)
             d.addErrback(lambda err: log.msg("Error initializing connection:", err))
