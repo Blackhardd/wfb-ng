@@ -266,6 +266,10 @@ def init(profiles, wlans, cluster_mode):
             except ValueError as e:
                 log.msg(e, level="warning")
 
+        # На дроне даём ant_sel_f в manager для «живого» RSSI в логе (как на GS)
+        if manager and getattr(manager, "power_manager", None):
+            manager.link_status = ant_sel_f
+
         if profile_cfg.stats_port:
             p_f = MsgPackAPIFactory(ant_sel_f.ui_sessions, is_cluster, cli_title)
             sockets.append(reactor.listenTCP(profile_cfg.stats_port, p_f))
@@ -281,7 +285,11 @@ def init(profiles, wlans, cluster_mode):
                             srv_cfg.udp_peers_auto if is_cluster else wlans,
                             link_id, ant_sel_f, is_cluster, rx_only_wlan_ids]
             
-            if service_type == 'mavlink' and hasattr(manager, 'status_manager') and manager.status_manager:
+            # Передаём manager в mavlink: для GS — StatusManager; для дрона — PowerSelection (ARM/DISARM)
+            if service_type == 'mavlink' and manager and (
+                (hasattr(manager, 'status_manager') and manager.status_manager) or
+                (hasattr(manager, 'power_manager') and manager.power_manager)
+            ):
                 service_args.append(manager)
                 
             dl.append(defer.maybeDeferred(type_map[service_type], *service_args))

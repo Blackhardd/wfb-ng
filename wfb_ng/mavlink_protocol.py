@@ -138,10 +138,11 @@ def mavlink_parser_gen(parse_l2=False):
 
 
 class MavlinkARMProtocol(object):
-    def __init__(self, call_on_arm, call_on_disarm, status_manager=None):
+    def __init__(self, call_on_arm, call_on_disarm, status_manager=None, power_selection=None):
         self.call_on_arm = call_on_arm
         self.call_on_disarm = call_on_disarm
-        self.status_manager = status_manager  # StatusManager для отслеживания статуса
+        self.status_manager = status_manager  # StatusManager на GS
+        self.power_selection = power_selection  # PowerSelection на дроне
         self.armed = None
         self.locked = False
         self.mavlink_fsm = mavlink_parser_gen(parse_l2=True)
@@ -174,10 +175,14 @@ class MavlinkARMProtocol(object):
                         log.msg("Atention: MavlinkARMProtocol, command - мгновенная команда ARM")
                         if self.status_manager:
                             self.status_manager.on_arm_command()
+                        if self.power_selection:
+                            self.power_selection.on_arm()
                     elif param1 == 0.0:
                         log.msg("Atention: MavlinkARMProtocol, command - мгновенная команда DISARM")
                         if self.status_manager:
                             self.status_manager.on_disarm_command()
+                        if self.power_selection:
+                            self.power_selection.on_disarm()
             except Exception as e:
                 log.msg(f"Error: MavlinkARMProtocol, parsing command: {e}")
 
@@ -208,12 +213,16 @@ class MavlinkARMProtocol(object):
             # StatusManager - о команде arm
             if self.status_manager:
                 self.status_manager.on_arm_command()
+            if self.power_selection:
+                self.power_selection.on_arm()
         else:
             log.msg('Atention: MavlinkARMProtocol, command - State change: DISARMED')
             cmd = self.call_on_disarm
             # StatusManager - о команде disarm
             if self.status_manager:
                 self.status_manager.on_disarm_command()
+            if self.power_selection:
+                self.power_selection.on_disarm()
 
         def on_err(f):
             log.msg('Command exec failed: %s' % (f.value,), isError=1)

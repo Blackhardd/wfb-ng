@@ -1,3 +1,25 @@
+"""
+Сценарии поведения (когда что включается):
+
+  ГДЕ ВХОДЫ (события):
+  - services.init_mavlink(): MAVLink RX передаётся в status_manager.on_packet_received() (GS).
+  - mavlink_protocol.MavlinkARMProtocol: при ARM/DISARM (команда или heartbeat) вызываются
+    status_manager.on_arm_command() / on_disarm_command() (GS) и
+    power_selection.on_arm() / on_disarm() (дрон).
+
+  ГС (GSManager):
+  - StatusManager (manager.py): статусы offline / online / working / lost / reconnecting.
+    Переходы по таймауту пакетов (PACKET_TIMEOUT 10s) и по факту disarm.
+    При переходе в offline и при disarm → freqsel.reset_all_channels_stats().
+  - FrequencySelection (frequency_selection.py): recovery hop (lost → reserve) и обычный hop
+    по PER/score/таймауту — считает сам по статистике каналов (StatsFactory), без явной
+    привязки к статусу StatusManager.
+
+  ДРОН (DroneManager):
+  - PowerSelection (power_selection.py): адаптация TX по RSSI только когда armed и не power_locked.
+    on_arm() → armed=True; on_disarm() → armed=False, power_locked=True (мощность фиксирована до рестарта).
+  - FrequencySelection: на дроне только выполняет команды hop от ГС и schedule_hop по action_time.
+"""
 import json
 import time
 from twisted.python import log
@@ -5,7 +27,7 @@ from twisted.internet import reactor, protocol, task, defer
 from twisted.internet.protocol import ReconnectingClientFactory
 
 from .frequency_selection import FrequencySelection
-from .power_selection import PowerSelection
+from .src.selections.power_selection import PowerSelection, GSPowerController
 
 class ManagerJSONClient(protocol.Protocol):
     def __init__(self, manager):
@@ -128,9 +150,16 @@ class ManagerJSONServer(protocol.Protocol):
                     pass
             elif command == "freq_sel_hop":
                 if self.manager.freqsel.is_enabled():
-                    response["time"] = self.manager.freqsel.schedule_hop()
+                    action_time = message.get("action_time")
+                    response["time"] = self.manager.freqsel.schedule_hop(action_time=action_time)
             elif command == "update_config":
                 self.manager.update_config(message.get("settings"))
+                
+            # Sander 05.02.2026: Добавляем команду для управления мощностью передатчика дрона
+            elif command == "tx_power":
+                action = message.get("action")
+                if getattr(self.manager, "power_manager", None) and action in ("increase", "decrease"):
+                    self.manager.power_manager.on_tx_power_command(action)
 
             self.send_response(response)
         except json.JSONDecodeError:
@@ -154,7 +183,6 @@ class Manager:
 
         # Create manager components
         self.freqsel = FrequencySelection(self)
-        # self.power_sel = PowerSelection(self)
         
         # StatusManager работает только на ground station (gs)
         # Не создаем для drone
@@ -191,8 +219,10 @@ class Manager:
         """
         Очистка ресурсов менеджера при остановке.
         """
-        if hasattr(self, 'status_manager'):
+        if hasattr(self, 'status_manager') and self.status_manager:
             self.status_manager.stop()
+        if hasattr(self, 'power_manager') and self.power_manager:
+            self.power_manager._cleanup()
 
 class GSManager(Manager):
     _type = "gs"
@@ -210,6 +240,15 @@ class GSManager(Manager):
         # Create and start management server
         self.server_f = ManagerJSONServerFactory(self)
         reactor.listenTCP(14889, self.server_f)
+
+        # Контроллер мощности: ГС по своему RSSI шлёт команды tx_power дрону
+        self.gs_power_controller = GSPowerController(self)
+        self.gs_power_controller.start()
+
+    def _cleanup(self):
+        if hasattr(self, "gs_power_controller") and self.gs_power_controller:
+            self.gs_power_controller.stop()
+        super()._cleanup()
 
     def on_connected(self):
         super().on_connected()
@@ -235,11 +274,6 @@ class GSManager(Manager):
         self._is_connected = True
 
     def update_config(self, data):
-        # self.client_f.send_command({
-        #     "command": "update_config",
-        #     "settings": data
-        # })
-
         super().update_config(data)
 
 class DroneManager(Manager):
@@ -247,6 +281,9 @@ class DroneManager(Manager):
 
     def __init__(self, config, wlans):
         super().__init__(config, wlans)
+
+        #старт с минимум мощности, после ARM — по RSSI, после DISARM — фиксация
+        self.power_manager = PowerSelection(self)
 
         # Create management client to send commands to GS
         self.client_f = ManagerJSONClientFactory(self)
@@ -438,6 +475,10 @@ class StatusManager:
         Свежий статус борта
         """
         return self._current_status
+
+    def is_armed(self):
+        """True если борт в статусе Working (получена команда ARM)."""
+        return self._current_status == self.STATUS_WORKING
     
     def get_status_info(self):
         """
