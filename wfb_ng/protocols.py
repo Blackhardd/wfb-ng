@@ -228,7 +228,7 @@ class AntStatsAndSelector(object):
         self.rssi_cb_l.append(rssi_cb)
 
     def get_live_rssi(self):
-        """Текущий RSSI из буфера cur_stats (как на GS) — для лога на дроне, без задержки через freqsel."""
+        """Текущий RSSI из буфера cur_stats (как на GS) — для лога на дроне, без задержки через frequency_selection."""
         cur = self.cur_stats
         if not cur:
             return None
@@ -497,7 +497,10 @@ class DbgProtocol(LineReceiver):
         self.rx_id = rx_id
 
     def lineReceived(self, line):
-        log.msg('%s: %s' % (self.rx_id, line.decode('utf-8')))
+        text = line.decode('utf-8')
+        if 'packets lost' in text:
+            return
+        log.msg('%s: %s' % (self.rx_id, text))
 
 
 

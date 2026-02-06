@@ -208,25 +208,19 @@ def init_mavlink(service_name, cfg, wlans, link_id, ant_sel_f, is_cluster, rx_on
 
     rx_hooks = []
     tx_hooks = []
-    # ================== ТОЧКА ВХОДА: сценарии поведения (ARM/DISARM, пакеты → StatusManager/PowerSelection) ==========================
-    # См. manager.py — докстринг "Сценарии поведения".
+    # ================== ТОЧКА ВХОДА StatusManager и для MAVLink ==========================
 
-    status_manager = None  # StatusManager только на GS
-    power_selection = None  # PowerSelection на дроне
+    status_manager = None  # StatusManager на только GS 
     if manager:
         if hasattr(manager, 'status_manager') and manager.status_manager:
             status_manager = manager.status_manager
-        if hasattr(manager, 'power_manager') and manager.power_manager:
-            power_selection = manager.power_manager
 
-    if cfg.call_on_arm or cfg.call_on_disarm or status_manager or power_selection:
-        arm_proto = MavlinkARMProtocol(cfg.call_on_arm, cfg.call_on_disarm, status_manager=status_manager, power_selection=power_selection)
+    if cfg.call_on_arm or cfg.call_on_disarm or status_manager:
+        arm_proto = MavlinkARMProtocol(cfg.call_on_arm, cfg.call_on_disarm, status_manager=status_manager)
         rx_hooks.append(arm_proto.dataReceived)
         tx_hooks.append(arm_proto.dataReceived)
         if status_manager:
             log.msg('StatusManager: Integration is complete')
-        if power_selection:
-            log.msg('PowerSelection (drone): ARM/DISARM integration is complete')
 
     if cfg.log_messages and ant_sel_f.logger is not None:
         mav_log_proto = MavlinkLoggerProtocol(ant_sel_f.logger)  # логгер mavlink

@@ -1,43 +1,25 @@
-"""
-Сценарии поведения (когда что включается):
-
-  ГДЕ ВХОДЫ (события):
-  - services.init_mavlink(): MAVLink RX передаётся в status_manager.on_packet_received() (GS).
-  - mavlink_protocol.MavlinkARMProtocol: при ARM/DISARM (команда или heartbeat) вызываются
-    status_manager.on_arm_command() / on_disarm_command() (GS) и
-    power_selection.on_arm() / on_disarm() (дрон).
-
-  ГС (GSManager):
-  - StatusManager (manager.py): статусы offline / online / working / lost / reconnecting.
-    Переходы по таймауту пакетов (PACKET_TIMEOUT 10s) и по факту disarm.
-    При переходе в offline → freqsel.reset_all_channels_stats() (не при каждом disarm, чтобы не сбрасывать при «просто выключил дрон»).
-  - FrequencySelection (frequency_selection.py): recovery hop (lost → reserve) и обычный hop
-    по PER/score/таймауту — считает сам по статистике каналов (StatsFactory), без явной
-    привязки к статусу StatusManager.
-
-  ДРОН (DroneManager):
-  - PowerSelection (power_selection.py): адаптация TX по RSSI только когда armed и не power_locked.
-    on_arm() → armed=True; on_disarm() → armed=False, power_locked=True (мощность фиксирована до рестарта).
-  - FrequencySelection: на дроне только выполняет команды hop от ГС и schedule_hop по action_time.
-"""
 import json
 import time
 from twisted.python import log
 from twisted.internet import reactor, protocol, task, defer
 from twisted.internet.protocol import ReconnectingClientFactory
 
-from .frequency_selection import FrequencySelection
+from .src.selections.frequency_selection import FrequencySelection
 from .src.selections.power_selection import PowerSelection, GSPowerController
+from .src.core.status import StatusManager
+from .src.core.data import ConnectionMetricsManager, DataHandler
+from .conf import settings
 
-class ManagerJSONClient(protocol.Protocol):
+
+# Отвечает за отправку команд на GS и обратно по JSON через TCP socket (для команд ARM/DISARM)
+class ManagerJSONClient(protocol.Protocol): 
     def __init__(self, manager):
         self.manager = manager
-
         self._queue = []
         self._waiting = False
         self._buffer = b""
 
-    def _process_queue(self):
+    def _process_queue(self): # обработка очереди команд
         while self._queue:
             command, deferred = self._queue.pop(0)
             try:
@@ -48,14 +30,14 @@ class ManagerJSONClient(protocol.Protocol):
             except Exception as e:
                 deferred.errback(e)
 
-    def connectionMade(self):
+    def connectionMade(self): # вызывается при установке соединения
         self.manager.on_connected()
         self._process_queue()
 
-    def connectionLost(self, reason):
+    def connectionLost(self, reason): # вызывается при разрыве соединения
         self.manager.on_disconnected(reason)
 
-    def dataReceived(self, data):
+    def dataReceived(self, data): # обработка полученных данных - сАмое главнвые действия
         self._buffer += data
         try:
             msg = json.loads(self._buffer.decode())
@@ -68,7 +50,7 @@ class ManagerJSONClient(protocol.Protocol):
         except json.JSONDecodeError:
             pass
 
-    def send_command(self, command):
+    def send_command(self, command): # отправка команды
         log.msg("Sending command:", command)
         d = defer.Deferred()
         self._queue.append((command, d))
@@ -76,7 +58,8 @@ class ManagerJSONClient(protocol.Protocol):
             self._process_queue()
         return d
 
-class ManagerJSONClientFactory(ReconnectingClientFactory):
+# Фабрика для управления подключением к GS и Drone по JSON через TCP socket
+class ManagerJSONClientFactory(ReconnectingClientFactory): 
     protocol = ManagerJSONClient
     noisy = False
     maxDelay = 1.0
@@ -87,23 +70,23 @@ class ManagerJSONClientFactory(ReconnectingClientFactory):
         self.manager = manager
         self.protocol_instance = None
 
-    def buildProtocol(self, addr):
+    def buildProtocol(self, addr): # создание экземпляра протокола
         self.resetDelay()
         p = self.protocol(self.manager)
         self.protocol_instance = p
         return p
     
-    def clientConnectionLost(self, connector, reason):
+    def clientConnectionLost(self, connector, reason): # обработка потери соединения
         log.msg("Manager connection lost:", reason)
         self.manager.on_disconnected(reason)
         ReconnectingClientFactory.clientConnectionLost(self, connector, reason)
 
-    def clientConnectionFailed(self, connector, reason):
+    def clientConnectionFailed(self, connector, reason): # обработка неудачного соединения
         log.msg("Manager connection failed:", reason)
         self.manager.on_disconnected(reason)
         ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
     
-    def send_command(self, command):
+    def send_command(self, command): # отправка команды
         """
         Отправить команду через protocol instance
         
@@ -116,7 +99,8 @@ class ManagerJSONClientFactory(ReconnectingClientFactory):
         # Вызывающий код должен проверять на None!
         return None
 
-class ManagerJSONServer(protocol.Protocol):
+# Серверная сторона - GS или Drone - принимает команды от GS и отправляет ответы
+class ManagerJSONServer(protocol.Protocol): 
     def __init__(self, manager):
         self.manager = manager
 
@@ -130,15 +114,15 @@ class ManagerJSONServer(protocol.Protocol):
             frame = json.dumps(obj).encode("utf-8")
         self.transport.write(frame)
 
-    def connectionMade(self):
+    def connectionMade(self): # вызывается при установке соединения
         peer = self.transport.getPeer()
         if peer.host != "127.0.0.1":
             self.manager.on_connected()
 
-    def connectionLost(self, reason):
+    def connectionLost(self, reason): # вызывается при разрыве соединения
         self.manager.on_disconnected(reason)
 
-    def dataReceived(self, data):
+    def dataReceived(self, data): # обработка полученных данных - сАмое главнвые действия
         try:
             message = json.loads(data.decode("utf-8"))
             command = message.get("command")
@@ -146,25 +130,42 @@ class ManagerJSONServer(protocol.Protocol):
             response = {"status": "success"}
             
             if command == "init":
-                if message["freq_sel"]["enabled"] and self.manager.freqsel.is_enabled():
+                if message["freq_sel"]["enabled"] and self.manager.frequency_selection.is_enabled():
                     pass
             elif command == "freq_sel_hop":
-                if self.manager.freqsel.is_enabled():
+                if self.manager.frequency_selection.is_enabled():
                     action_time = message.get("action_time")
-                    response["time"] = self.manager.freqsel.schedule_hop(action_time=action_time)
+                    target_channel = None
+                    if message.get("target_freq"):
+                        target_freq = message.get("target_freq")
+                        target_channel = self.manager.frequency_selection.channels.by_freq(target_freq)
+                        if target_channel:
+                            kind = "recovery" if message.get("is_recovery") else "hop"
+                            log.msg(f"[FS {kind}] Drone received command to {target_freq} MHz")
+                        else:
+                            log.msg(f"WARNING: Target freq {target_freq} MHz not found in channels")
+                    response["time"] = self.manager.frequency_selection.schedule_hop(
+                        action_time=action_time,
+                        channel=target_channel,
+                        is_recovery=message.get("is_recovery", False),
+                    )
             elif command == "update_config":
                 self.manager.update_config(message.get("settings"))
-                
-            # Sander 05.02.2026: Добавляем команду для управления мощностью передатчика дрона
+
             elif command == "tx_power":
                 action = message.get("action")
-                if getattr(self.manager, "power_manager", None) and action in ("increase", "decrease"):
-                    self.manager.power_manager.on_tx_power_command(action)
+                if hasattr(self.manager, 'power_selection') and self.manager.power_selection and action:
+                    self.manager.power_selection.on_tx_power_command(action)
+                    response["level"] = self.manager.power_selection.level_index
+                else:
+                    response["status"] = "error"
+                    response["error"] = "tx_power not available or invalid action"
 
             self.send_response(response)
         except json.JSONDecodeError:
             self.send_response({"status": "error"})
 
+# Фабрика для управления серверным соединением GS или Drone по JSON через TCP socket
 class ManagerJSONServerFactory(protocol.ServerFactory):
     protocol = ManagerJSONServer
 
@@ -174,21 +175,64 @@ class ManagerJSONServerFactory(protocol.ServerFactory):
     def buildProtocol(self, addr):
         return self.protocol(self.manager)
 
+
+# Глобальный определяющий класс менеджера - GS или Drone
 class Manager:
-    _is_connected = False
+    _is_connected = False # Флаг соединения с GS или Drone
 
     def __init__(self, config, wlans):
         self.config = config
         self.wlans = wlans
 
-        # Create manager components
-        self.freqsel = FrequencySelection(self)
-        
-        # StatusManager работает только на ground station (gs)
-        # Не создаем для drone
+        # 1. Компонент менеджера - получение сырых данных от wfb_rx
+        stats_port = getattr(settings, self.get_type()).stats_port
+        self.data_handler = DataHandler(stats_port=stats_port)
+
+        # 2. Компонент менеджера - выбор частоты
+        self.frequency_selection = FrequencySelection(self)
+
+        # 3. Компонент менеджера - метрики связи
+        self.metrics_manager = ConnectionMetricsManager(initial_freq=settings.common.wifi_channel)
+
+        # 4. Компонент менеджера - управление статусами устройств
         self.status_manager = None
 
+        # 5. Компонент менеджера - инициируем "пайплайн"
+        self._setup_data_pipeline()
+
+    def _setup_data_pipeline(self):
+        """
+        Подключаем потоки данных:
+
+        DataHandler -> metrics_manager
+        DataHandler -> frequency_selection.channels
+        DataHandler -> status_manager.on_packet_received (если есть)
+
+        Источник один — stats от wfb_rx по любому потоку (video/mavlink/tunnel).
+        Как только по любому из потоков приходят данные — считаем «пакет получен» для статуса связи.
+        """
+        self.metrics_manager.connect_to(self.data_handler)
+
+        if hasattr(self, 'frequency_selection') and hasattr(self.frequency_selection, 'channels'):
+            self.data_handler.add_callback(self.frequency_selection.channels.on_stats_received)
+
+        # Любая доставка stats по радиоканалу (любой поток) -> событие «пакет получен» для StatusManager.
+        # Не зависим от mavlink: работает при любом потоке (video/mavlink/tunnel).
+        self.data_handler.add_callback(self._on_radio_stats_for_status)
+
+    def _on_radio_stats_for_status(self, rx_id, stats_dict):
+        """Уведомляем StatusManager только когда реально принят хотя бы один пакет (не просто приход stats с PER 100%)."""
+        if not getattr(self, 'status_manager', None):
+            return
+        p_total = stats_dict.get('p_total', 0)
+        p_bad = stats_dict.get('p_bad', 0)
+        if p_total > 0 and (p_total - p_bad) > 0:
+            self.status_manager.on_packet_received()
+
     def get_type(self):
+        """
+        Что инициализируется: GS менеджер = _type = "gs" , _type = "drone"
+        """
         return self._type
     
     def is_connected(self):
@@ -201,7 +245,7 @@ class Manager:
         log.msg(f"Management connection closed: {reason}")
         self._is_connected = False
 
-    def update_config(self, data):
+    def update_config(self, data): # обновляем cfg по секциям
         from .conf import wfb_ng_cfg, user_settings
 
         for section_name, section_data in data.items():
@@ -221,17 +265,25 @@ class Manager:
         """
         if hasattr(self, 'status_manager') and self.status_manager:
             self.status_manager.stop()
-        if hasattr(self, 'power_manager') and self.power_manager:
-            self.power_manager._cleanup()
 
+# Менеджер что запускается на пульте
 class GSManager(Manager):
     _type = "gs"
 
     def __init__(self, config, wlans):
         super().__init__(config, wlans)
-        
-        ##### Sander 23.01.2026 Для понимания работы устройства. StatusManager только для GS
+
+        # StatusManager — управляет статусами соединения
         self.status_manager = StatusManager(config, wlans, manager=self)
+
+        # Подключаем metrics_manager -> status_manager (данные уже идут из DataHandler в metrics_manager)
+        self.metrics_manager.set_metrics_callback(self.status_manager.update_metrics)
+
+        # Интегрируем frequency_selection в status_manager через subscribe_to_status_events
+        self.frequency_selection.subscribe_to_status_events(self.status_manager)
+
+        # Запуск единого DataHandler
+        reactor.callWhenRunning(self.data_handler.start)
 
         # Create management client
         self.client_f = ManagerJSONClientFactory(self)
@@ -241,21 +293,16 @@ class GSManager(Manager):
         self.server_f = ManagerJSONServerFactory(self)
         reactor.listenTCP(14889, self.server_f)
 
-        # Контроллер мощности: ГС по своему RSSI шлёт команды tx_power дрону
-        self.gs_power_controller = GSPowerController(self)
-        self.gs_power_controller.start()
-
-    def _cleanup(self):
-        if hasattr(self, "gs_power_controller") and self.gs_power_controller:
-            self.gs_power_controller.stop()
-        super()._cleanup()
+        # Контроллер мощности: GS по своему RSSI отправляет команды дрону (increase/decrease)
+        self.power_controller = GSPowerController(self)
+        reactor.callWhenRunning(self.power_controller.start)
 
     def on_connected(self):
         super().on_connected()
         if not self._is_connected:
             d = self.client_f.send_command({
                 "command": "init",
-                "freq_sel": {"enabled": self.freqsel.is_enabled()}
+                "freq_sel": {"enabled": self.frequency_selection.is_enabled()}
             })
             
             # Защита: send_command может вернуть None если соединение не готово
@@ -276,14 +323,31 @@ class GSManager(Manager):
     def update_config(self, data):
         super().update_config(data)
 
+    def _cleanup(self):
+        if hasattr(self, 'power_controller') and self.power_controller:
+            self.power_controller.stop()
+        super()._cleanup()
+
+# Менеджер что запускается на дроне
 class DroneManager(Manager):
     _type = "drone"
 
     def __init__(self, config, wlans):
+        log.msg("[DroneManager] ========== INITIALIZATION START ==========")
         super().__init__(config, wlans)
+        self.status_manager = StatusManager(config, wlans, manager=self)
 
-        #старт с минимум мощности, после ARM — по RSSI, после DISARM — фиксация
-        self.power_manager = PowerSelection(self)
+        # PowerSelection — адаптивная мощность передатчика (только на дроне)
+        self.power_selection = PowerSelection(self)
+        self.status_manager.subscribe("status_changed", self._on_status_changed_for_power)
+
+        # metrics_manager уже инициализирован в Manager, подключаем к status_manager через set_metrics_callback
+        self.metrics_manager.set_metrics_callback(self.status_manager.update_metrics)
+
+        self.frequency_selection.subscribe_to_status_events(self.status_manager)
+
+        # Запуск единого DataHandler (RSSI/PER/SNR пойдут в metrics_manager и на дрон)
+        reactor.callWhenRunning(self.data_handler.start)
 
         # Create management client to send commands to GS
         self.client_f = ManagerJSONClientFactory(self)
@@ -293,6 +357,23 @@ class DroneManager(Manager):
         self.server_f = ManagerJSONServerFactory(self)
         reactor.listenTCP(14888, self.server_f)
 
+    def _on_status_changed_for_power(self, old_status, new_status):
+        """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS."""
+        if new_status == self.status_manager.STATUS_ARMED:
+            self.power_selection.on_arm()
+        elif new_status == self.status_manager.STATUS_DISARMED:
+            self.power_selection.on_disarm()
+            self.power_selection.set_minimum_power()
+        elif new_status == self.status_manager.STATUS_CONNECTED:
+            self.power_selection.set_minimum_power()
+
+    def _cleanup(self):
+        if hasattr(self, 'power_selection') and self.power_selection:
+            self.power_selection.stop()
+        super()._cleanup()
+
+
+# Фабрика, что запускает тот или иной менеджер в файле services.py
 class ManagerFactory:
     _registry = {
         "gs": GSManager,
@@ -305,214 +386,3 @@ class ManagerFactory:
         if manager_class:
             return manager_class(config, wlans)
         raise ValueError(f"Unknown profile: {profile}")
-
-
-class StatusManager:
-    """
-    Менеджер статусов.
-    - Online > если получили пакет. 
-    - Working > если получили arm команду
-    - Reconnecting > если был или working или online и пакеты пропали
-    - Lost > если пакетов не было больше 10-секунд и не было команды дизарм
-    - Offline > если получили команду дизарм и не было пакетов 10 секунд
-    """
-    
-    # Статусы устройства
-    STATUS_OFFLINE = "offline"
-    STATUS_ONLINE = "online"
-    STATUS_WORKING = "working"
-    STATUS_LOST = "lost"
-    STATUS_RECONNECTING = "reconnecting"
-    
-    # Таймауты в секундах
-    PACKET_TIMEOUT = 10.0  # Таймаут для определения потери связи
-    DISARM_TIMEOUT = 10.0  # Таймаут после disarm для перехода в offline
-    
-    def __init__(self, config, wlans, manager=None):
-        self._last_packet_time = None # Время = когда был последний пакет
-        self._last_disarm_time = None # Время = когда был последний дизарм
-        self._current_status = self.STATUS_OFFLINE # Текущий статус борта 
-        self._status_change_callback = None # Калбе для уведомлений изменения статуса
-        self._status_check_task = task.LoopingCall(self._check_status) # Задаем задачу для пееродического обновления инфы статуса
-        self._status_check_task.start(1.0)  # Проверка каждую секунду
-        self._manager = manager  # Ссылка на manager для доступа к freqsel
-        
-        log.msg("Good: StatusManager - init & start")
-    
-    def on_packet_received(self):
-        """
-        Вызываем время последнего пакета, и сразу обновляем время.
-        """
-        self._last_packet_time = time.time()
-        
-        # Если получили пакет - статус Online (если не Working)
-        if self._current_status == self.STATUS_WORKING:
-            # В статусе Working остаемся в Working при получении пакетов
-            pass
-        elif self._current_status != self.STATUS_ONLINE:
-            # Из других статусов переходим в Online
-            self._set_status(self.STATUS_ONLINE)
-    
-    def on_arm_command(self):
-        """
-        Получили arm? Переводим в статус Working.
-        """
-        self._last_disarm_time = None # Сбрасываем время дизарма при новом арме
-        self._set_status(self.STATUS_WORKING)
-        log.msg("Atention: StatusManager - arm command received, status -> Working")
-    
-    def on_disarm_command(self):
-        """
-        Получили disarm: явная команда MAV_CMD или HEARTBEAT с битом ARMED=0 (последний пакет от дрона).
-        Запоминаем время для перехода в offline. Сброс статистики freqsel — только при переходе в offline,
-        иначе при «просто выключил дрон» последний HEARTBEAT с armed=0 вызывал бы сброс и лишние hop.
-        """
-        self._last_disarm_time = time.time()
-        log.msg("Atention: StatusManager - disarm command received")
-    
-    def _check_status(self):
-        """
-        Проверка статуса устройства ( главная логика по сути)
-        """
-        current_time = time.time()
-        time_since_packet = current_time - self._last_packet_time if self._last_packet_time else None
-        time_since_disarm = current_time - self._last_disarm_time if self._last_disarm_time else None
-        
-        # Sander 24.01.2026: Ограничиваем время отсчета дизарма. Если он был > 60 сек назад, 
-        # то он уже не важен для логики перехода в offline и только засоряет логи.
-        if time_since_disarm is not None and time_since_disarm > 60.0:
-            self._last_disarm_time = None
-            time_since_disarm = None
-        
-        # Периодическое логирование текущего статуса (каждые 5 секунд для отладки)
-        if not hasattr(self, '_last_status_log_time'):
-            self._last_status_log_time = current_time
-        if current_time - self._last_status_log_time >= 5.0:
-            self._last_status_log_time = current_time
-            log_msg = f"StatusManager: Борт в: {self._current_status}"
-            if time_since_packet is not None:
-                log_msg += f" | Пакет был: {time_since_packet:.1f}s"
-            if time_since_disarm is not None:
-                log_msg += f" | Дизарм был: {time_since_disarm:.1f}s"
-            log.msg(log_msg)
-        
-        # Проверка статуса офлайн: был дизарм и пакеты не получались больше 10 сек
-        if self._last_disarm_time is not None:
-            if time_since_packet is not None and time_since_packet > self.PACKET_TIMEOUT:
-                # После дизарма пакеты перестали идти
-                if self._current_status != self.STATUS_OFFLINE:
-                    self._set_status(self.STATUS_OFFLINE)
-                return
-            elif time_since_packet is not None and time_since_packet <= self.PACKET_TIMEOUT:
-                # Пакеты все еще идут после дизарма - если был Working, переходим в Online
-                if self._current_status == self.STATUS_WORKING:
-                    self._set_status(self.STATUS_ONLINE)
-                # Но флаг _last_disarm_time НЕ СБРАСЫВАЕМ, ждем когда пакеты закончатся
-        
-        # Проверка онлайн - пакеты получались в последние 10 сек
-        if time_since_packet is not None and time_since_packet <= self.PACKET_TIMEOUT:
-            if self._current_status == self.STATUS_WORKING:
-                # В статусе Working остаемся в Working при получении пакетов
-                pass
-            elif self._current_status != self.STATUS_ONLINE:
-                self._set_status(self.STATUS_ONLINE)
-            return
-        
-        # Пакеты не получаются в течение 10 сек
-        if time_since_packet is None:
-            # Никогда не получали пакеты - остаемся в текущем статусе
-            pass
-        elif time_since_packet > self.PACKET_TIMEOUT:
-            # Обработка потери пакетов для разных статусов
-            if self._current_status == self.STATUS_ONLINE and self._last_disarm_time is None:
-                # Был Online, прошло > 10 сек без пакетов -> Reconnecting
-                self._set_status(self.STATUS_RECONNECTING)
-            elif self._current_status == self.STATUS_WORKING:
-                # Был Working, прошло > 10 сек без пакетов
-                if self._last_disarm_time is None:
-                    # Не было disarm -> Reconnecting
-                    self._set_status(self.STATUS_RECONNECTING)
-                # Если был disarm, проверка Offline уже обработана выше
-            elif self._current_status == self.STATUS_RECONNECTING:
-                # Был Reconnecting, прошло еще > 10 сек (всего > 20 сек) -> Lost
-                if self._last_disarm_time is None and time_since_packet > self.PACKET_TIMEOUT * 2:
-                    # Не было disarm и прошло > 20 сек без пакетов -> Lost
-                    self._set_status(self.STATUS_LOST)
-                # Если был disarm, проверка Offline уже обработана выше
-    
-    def _set_status(self, new_status):
-        """
-        Запрашиваю новый статус
-        """
-        if new_status != self._current_status:
-            old_status = self._current_status
-            self._current_status = new_status
-            
-            # Логируем изменение статуса с дополнительной информацией
-            time_since_packet = time.time() - self._last_packet_time if self._last_packet_time else None
-            time_since_disarm = time.time() - self._last_disarm_time if self._last_disarm_time else None
-            
-            log_msg = f"StatusManager: Сменился статус с [{old_status} -> {new_status}]"
-            if time_since_packet is not None:
-                log_msg += f" | Время пакета: ={time_since_packet:.1f}s"
-            if time_since_disarm is not None:
-                log_msg += f" | Время дизарма: ={time_since_disarm:.1f}s"
-            log.msg(log_msg)
-            
-            # Сбрасываем статистику frequency selection при переходе в offline
-            if new_status == self.STATUS_OFFLINE:
-                if self._manager and hasattr(self._manager, 'freqsel'):
-                    self._manager.freqsel.reset_all_channels_stats()
-            
-            if self._status_change_callback:
-                try:
-                    self._status_change_callback(old_status, new_status)
-                except Exception as e:
-                    log.msg(f"Error: StatusManager - error in status change callback: {e}", isError=True)
-    
-    def get_status(self):
-        """
-        Свежий статус борта
-        """
-        return self._current_status
-
-    def is_armed(self):
-        """True если борт в статусе Working (получена команда ARM)."""
-        return self._current_status == self.STATUS_WORKING
-    
-    def get_status_info(self):
-        """
-       Возвращает статус инфо по борту
-        """
-        current_time = time.time()
-        info = {
-            "status": self._current_status,
-            "last_packet_time": self._last_packet_time,
-            "time_since_last_packet": current_time - self._last_packet_time if self._last_packet_time else None,
-            "last_disarm_time": self._last_disarm_time,
-            "time_since_disarm": current_time - self._last_disarm_time if self._last_disarm_time else None,
-        }
-        return info
-    
-    def set_status_change_callback(self, callback):
-        """
-        Устанавливаю колбек для уведомления об изменении статуса
-        """
-        self._status_change_callback = callback
-    
-    def reset(self):
-        """
-        Сбрасывает стейт менеджера
-        """
-        self._last_packet_time = None
-        self._last_disarm_time = None
-        self._current_status = self.STATUS_OFFLINE
-        log.msg("Atention: StatusManager - state reset")
-    
-    def stop(self):
-        """
-        Останавливает проверку статуса
-        """
-        if self._status_check_task and self._status_check_task.running:
-            self._status_check_task.stop()
-        log.msg("Atention: StatusManager - stopped")
