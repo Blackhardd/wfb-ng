@@ -10,7 +10,7 @@
   ГС (GSManager):
   - StatusManager (manager.py): статусы offline / online / working / lost / reconnecting.
     Переходы по таймауту пакетов (PACKET_TIMEOUT 10s) и по факту disarm.
-    При переходе в offline и при disarm → freqsel.reset_all_channels_stats().
+    При переходе в offline → freqsel.reset_all_channels_stats() (не при каждом disarm, чтобы не сбрасывать при «просто выключил дрон»).
   - FrequencySelection (frequency_selection.py): recovery hop (lost → reserve) и обычный hop
     по PER/score/таймауту — считает сам по статистике каналов (StatsFactory), без явной
     привязки к статусу StatusManager.
@@ -363,12 +363,12 @@ class StatusManager:
     
     def on_disarm_command(self):
         """
-        Получили disarm? Запоминает время ( для Ofline).
+        Получили disarm: явная команда MAV_CMD или HEARTBEAT с битом ARMED=0 (последний пакет от дрона).
+        Запоминаем время для перехода в offline. Сброс статистики freqsel — только при переходе в offline,
+        иначе при «просто выключил дрон» последний HEARTBEAT с armed=0 вызывал бы сброс и лишние hop.
         """
-        self._last_disarm_time = time.time() # Запоминаем время команды дизарм
+        self._last_disarm_time = time.time()
         log.msg("Atention: StatusManager - disarm command received")
-        if self._manager and hasattr(self._manager, 'freqsel'):
-            self._manager.freqsel.reset_all_channels_stats()
     
     def _check_status(self):
         """
