@@ -157,7 +157,7 @@ class StatusManager:
 
     PACKET_TIMEOUT              = 5.0       # connected/disarmed: объявить lost после N сек без пакетов
     ARMED_PACKET_TIMEOUT        = 10.0      # armed -> lost: 10 сек без пакетов (гистерезис)
-    LOST_TO_RECOVERY_TIMEOUT    = 10.0      # lost -> recovery: 10 сек в lost, затем FS hop на wifi_recovery
+    LOST_TO_RECOVERY_TIMEOUT    = 10.0      # lost -> recovery: 10 сек в lost, затем FS hop на wifi_channel
     DISARMED_GRACE_PERIOD       = 45.0      # используется только как ориентир
 
     STABLE_LINK_PACKETS = 3

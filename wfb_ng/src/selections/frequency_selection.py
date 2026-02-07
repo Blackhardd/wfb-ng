@@ -39,9 +39,13 @@ HOP_SCORE_THRESHOLD = 50        # Порог score для перехода на 
 HOP_TIMEOUT_SECONDS = 30        # Таймаут перехода на другой канал
 HOP_TIMEOUT_SCORE = 80          # Порог score для перехода на другой канал
 HOP_MIN_INTERVAL = 5.0          # Минимальное время и интервал на канале перед hop и между хопами
+RECOVERY_TO_CONNECTION_HOP_DELAY = 2.0  # Задержка (сек) перед hop на первый freq_sel после recovery
 # настройки хоп-системы (переключения канала)
 
 LINK_LOSS_NO_HOP_SEC = 1.0      # Защита от спама при потере связи
+# Если канал хуже этих порогов — всё равно разрешаем хоп (ищем лучший), не ждём lost/recovery
+SCORE_VERY_BAD = 25             # Score ниже — канал совсем плохой, переключаемся
+PER_VERY_BAD = 80               # PER выше — канал совсем плохой, переключаемся
 CHANNEL_KEEP_HISTORY = 5        # Количество измерений для хранения в истории
 
 
@@ -122,7 +126,7 @@ def _single_freq(value):
 
 class Channels:
     """
-    Логика жёсткая: startup (wifi_channel), reserve (wifi_recovery), список freq_sel.
+    Логика: startup (wifi_channel), reserve (тот же wifi_channel для recovery), список freq_sel.
     Текущий канал хранится напрямую в _current_channel; _index только для next_channel() по списку.
     """
 
@@ -130,10 +134,10 @@ class Channels:
     ROLE_RECOVERY = "recovery"
     ROLE_FREQ_SEL = "freq_sel"
 
-    def __init__(self, frequency_selection, wifi_channel_freq, wifi_recovery_freq, freq_sel_frequencies):
+    def __init__(self, frequency_selection, wifi_channel_freq, reserve_freq, freq_sel_frequencies):
         self.frequency_selection = frequency_selection
         self._startup = Channel(_single_freq(wifi_channel_freq))
-        self._reserve = Channel(_single_freq(wifi_recovery_freq))
+        self._reserve = Channel(_single_freq(reserve_freq))  # обычно тот же wifi_channel, чтобы recovery встречался с дроном
         self._list = ChannelsFactory.create(freq_sel_frequencies)
         self._current_channel = self._startup
         self._index = 0
@@ -294,11 +298,16 @@ class NormalOperationState(FrequencySelectionState):
 
         reason = self.fs._get_normal_hop_reason(channel)
         if reason:
+            log.msg(f"[FS] Normal hop requested: {reason} (score={channel.score():.1f}, PER={calculate_per(channel._measurements, SCORE_FRAMES)}%)")
             self.fs.hop(reason=reason)
 
     def hop(self, reason=None):
         """Запланировать переход на следующий канал (реальное переключение)."""
         if self.fs._is_scheduled_hop:
+            log.msg("[FS] Hop skipped: another hop already scheduled")
+            return
+        if not self.fs.channels._list or len(self.fs.channels._list) < 2:
+            log.msg(f"[FS] Hop skipped: freq_sel_channels must have at least 2 different channels (have {len(self.fs.channels._list or [])})")
             return
         target = self.fs.channels.next_channel()
         if not target:
@@ -318,8 +327,10 @@ class NormalOperationState(FrequencySelectionState):
 
 class RecoveryModeState(FrequencySelectionState):
     """
-    Режим восстановления связи. Hop на wifi_recovery (reserve) — так же делает и дрон,
-    обе стороны снова на одном канале.
+    Режим восстановления связи. Hop на reserve (тот же канал, что wifi_channel) —
+    дрон стартует на wifi_channel, GS возвращается туда же, обе стороны снова на одном канале.
+    Перед переходом на wifi_channel: если мы на первом канале freq_sel — сначала хоп на последний,
+    затем хоп на wifi_channel (защита: гарантированный порядок переключений).
     """
 
     def name(self):
@@ -331,11 +342,30 @@ class RecoveryModeState(FrequencySelectionState):
 
     def on_recovery_needed(self):
         if self.fs.is_already_on_recovery():
-            log.msg("[FS] Already on wifi_recovery in recovery mode")
+            log.msg("[FS] Already on recovery channel (wifi_channel)")
             return
         reserve = self.fs.channels.reserve()
-        log.msg(f"[FS] Recovery hop -> wifi_recovery ({format_channel_freq(reserve.freq())})")
-        self.fs._schedule_hop_to(reserve, is_recovery=True)
+        current = self.fs.channels.current()
+        # Перед переходом на wifi_channel: если на первом канале — сначала на последний, затем на recovery
+        if (
+            self.fs.channels._list
+            and len(self.fs.channels._list) >= 2
+            and self.fs.channels.is_on_freq_sel()
+            and current is self.fs.channels.first_freq_sel_channel()
+        ):
+            last_ch = self.fs.channels.last_freq_sel_channel()
+            log.msg(
+                f"[FS] Recovery: on first channel -> hop to last ({format_channel_freq(last_ch.freq())}), then wifi_channel"
+            )
+            self.fs._schedule_hop_to(
+                last_ch,
+                is_recovery=False,
+                send_to_drone=False,
+                after_hop=lambda: self.fs._schedule_hop_to(reserve, is_recovery=True),
+            )
+        else:
+            log.msg(f"[FS] Recovery hop -> wifi_channel ({format_channel_freq(reserve.freq())})")
+            self.fs._schedule_hop_to(reserve, is_recovery=True)
 
 
 class DisabledState(FrequencySelectionState):
@@ -356,12 +386,13 @@ class FrequencySelection:
         self.enabled = settings.common.freq_sel_enabled
 
         wifi_channel = settings.common.wifi_channel
-        wifi_recovery = getattr(settings.common, 'wifi_recovery', wifi_channel)  # отдельный канал для recovery
+        # Recovery на том же канале, что и старт (wifi_channel), чтобы GS и дрон снова встретились после потери связи.
         freq_sel_channels = list(settings.common.freq_sel_channels)
-        self.channels = Channels(self, wifi_channel, wifi_recovery, freq_sel_channels)
+        self.channels = Channels(self, wifi_channel, wifi_channel, freq_sel_channels)
 
         self._last_hop_time = time.time()
         self._is_scheduled_hop = False
+        self._after_hop_callback = None  # вызывается после _do_hop (цепочка хопов)
 
         # Состояния
         self._states = {
@@ -433,11 +464,13 @@ class FrequencySelection:
         return time.time() - self._last_hop_time >= timeout
 
     def is_already_on_recovery(self):
-        """Уже на канале wifi_recovery (reserve)."""
+        """Уже на канале recovery (reserve = wifi_channel)."""
         return self.channels.current() is self.channels.reserve()
 
     def _should_skip_hop_due_to_link_loss(self, channel):
-        """Не делать hop при подозрении на потерю связи (ждём lost -> recovery)."""
+        """Не делать hop при подозрении на потерю связи (ждём lost -> recovery).
+        Исключение: если канал совсем плохой (score очень низкий или PER очень высокий) —
+        разрешаем хоп, ищем канал лучше."""
         sm = getattr(self.manager, "status_manager", None)
         if sm is None:
             return False
@@ -445,7 +478,12 @@ class FrequencySelection:
         if time_since is None or time_since <= LINK_LOSS_NO_HOP_SEC:
             return False
         per = calculate_per(channel._measurements, SCORE_FRAMES)
-        if per >= HOP_PER_THRESHOLD or channel.score() < HOP_SCORE_THRESHOLD:
+        score = channel.score()
+        # Канал совсем плохой — не блокируем хоп, переключаемся и ищем лучший (включая score == 25)
+        if per >= PER_VERY_BAD or score <= SCORE_VERY_BAD:
+            log.msg(f"[FS] Channel very bad (PER {per}%, score {score:.1f}) -> allow hop to find better")
+            return False
+        if per >= HOP_PER_THRESHOLD or score < HOP_SCORE_THRESHOLD:
             log.msg(f"[FS] No packet for {time_since:.1f}s (link loss?) -> skip hop, wait for lost/recovery")
             return True
         return False
@@ -478,6 +516,21 @@ class FrequencySelection:
     def _on_status_changed(self, old_status, new_status):
         if self._current_state:
             self._current_state.on_status_changed(old_status, new_status)
+
+        # Есть хотя бы один канал freq_sel — можно переходить на первый при connected/armed (даже если канал один, is_enabled() = False)
+        has_any_freq_sel = bool(self.channels._list) and self.channels.first_freq_sel_channel()
+        on_startup = self.channels.current() is self.channels._startup
+
+        # Connected или Armed: если мы на wifi_channel и есть freq_sel — переходим в connection и hop на первый freq_sel
+        if has_any_freq_sel and on_startup:
+            if new_status == "connected":
+                log.msg("[FS] Connected on wifi_channel -> switch to first freq_sel channel (connection)")
+                self._transition_to("connection")
+                return
+            if new_status == "armed" and self._current_state and self._current_state.name() == "normal":
+                log.msg("[FS] Armed while on wifi_channel -> switch to first freq_sel channel (connection)")
+                self._transition_to("connection")
+                return
 
         if not self.is_enabled():
             return
@@ -521,7 +574,7 @@ class FrequencySelection:
 
     # ─── Планирование и выполнение hop ───────────────────────────
 
-    def _schedule_hop_to(self, target_channel, is_recovery=False, action_time=None, send_to_drone=True):
+    def _schedule_hop_to(self, target_channel, is_recovery=False, action_time=None, send_to_drone=True, after_hop=None):
         if self._is_scheduled_hop:
             return
         # Для обычного hop (не recovery/connection/lost) — соблюдаем минимальный интервал
@@ -531,6 +584,7 @@ class FrequencySelection:
                 return
 
         self._is_scheduled_hop = True
+        self._after_hop_callback = after_hop
 
         if action_time is None:
             action_time = self.get_action_time()
@@ -571,6 +625,10 @@ class FrequencySelection:
                     "[FS] Hop skipped: target channel is same frequency (no change)."
                 )
                 self._is_scheduled_hop = False
+                cb = self._after_hop_callback
+                self._after_hop_callback = None
+                if cb:
+                    cb()
                 return
 
             log.msg(f"[HOP START] {format_channel_freq(current_freq)} -> {format_channel_freq(target_freq)}")
@@ -597,6 +655,10 @@ class FrequencySelection:
             log.msg(f"[HOP FAILED] {e}")
         finally:
             self._is_scheduled_hop = False
+            cb = self._after_hop_callback
+            self._after_hop_callback = None
+            if cb:
+                cb()
 
     def get_action_time(self, interval=1.0):
         return time.time() + interval
