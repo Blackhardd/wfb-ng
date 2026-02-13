@@ -292,8 +292,9 @@ class Manager:
                 pass
             return self.process_init_command(message)
         if command == "freq_sel_hop":
-            # Хопы отключены — только подтверждаем приём, переключения канала нет
-            response["time"] = message.get("action_time")
+            # Дрон считает action_time, планирует свой хоп на этот момент, отдаёт время ГС для синхронного хопа
+            hop_response = self.frequency_selection.handle_hop_command()
+            return {**response, **hop_response}
         elif command == "update_config":
             self.update_config(message.get("settings"))
         elif command == "tx_power":

@@ -25,6 +25,11 @@ SCORE_PER_MAX_PENALTY = 10
 SCORE_SNR_MIN_THRESHOLD = 20
 CHANNEL_KEEP_HISTORY = 5
 
+# Авто-хоп по PER: только при PER в этом диапазоне и только в connected/armed/disarmed
+PER_HOP_MIN = 40
+PER_HOP_MAX = 80
+PER_HOP_COOLDOWN_SEC = 15
+
 
 
 class Channel:
@@ -49,7 +54,7 @@ class Channel:
         ch_str = format_channel_freq(self._freq)
         log.msg(f"Channel {ch_str} - RSSI: {rssi_str}, PER: {per}%, SNR: {snr:.2f} dB, Score: {score:.2f}")
         if self._on_score_updated:
-            self._on_score_updated(self)
+            self._on_score_updated(self, per=per)
 
     @property
     def freq(self):
@@ -65,13 +70,17 @@ class Channel:
         if stats.p_total > 0:
             self._last_packet_time = time.time()
         self._measurements.append(rx_id, stats)
-        lengths = {k: len(v) for k, v in self._measurements.items()}
-        if len(set(lengths.values())) == 1:
+        # Обновлять score когда есть достаточно данных для расчёта PER (SCORE_FRAMES).
+
+        lengths = [len(v) for v in self._measurements.values() if len(v) > 0]
+        if lengths and min(lengths) >= SCORE_FRAMES:
             self._update_score()
 
     def set_on_score_updated(self, callback):
         self._on_score_updated = callback
 
+
+    #
     def clear_measurements(self):
         for stream in [self._measurements.video, self._measurements.mavlink, self._measurements.tunnel]:
             if len(stream) > CHANNEL_KEEP_HISTORY:
@@ -127,8 +136,8 @@ class Channels:
         for chan in self._list:
             chan.set_on_score_updated(self._on_channel_score_updated)
 
-    def _on_channel_score_updated(self, channel):
-        self.frequency_selection._on_channel_score_updated(channel)
+    def _on_channel_score_updated(self, channel, per=None):
+        self.frequency_selection._on_channel_score_updated(channel, per=per)
 
     def on_stats_received(self, rx_id, stats_dict):
         stats = MeasurementStats(
@@ -301,7 +310,7 @@ class HopLocalOnly:
         return self._switch_to(self.channels.reserve, delay=delay)
 
 # -------------------
-# 2) Запланированный хоп GS → дрон (выполнение на дроне в action_time)
+# 2) Запланированный хоп GS -> дрон (выполнение на дроне в action_time)
 # -------------------
 class HopScheduledGS2Drone:
     """
@@ -317,7 +326,8 @@ class HopScheduledGS2Drone:
     def schedule(self, action_time, target_freq=None):
         """
         Запланировать переключение радио на момент action_time.
-        target_freq: частота в MHz или None (тогда channels.next_channel()).
+        target_freq: частота в MHz или None — тогда: если на wifi_channel -> первый из freq_sel,
+        иначе следующий канал в списке freq_sel.
         """
         if target_freq is not None:
             target = self.channels.by_freq(target_freq)
@@ -325,7 +335,11 @@ class HopScheduledGS2Drone:
                 log.msg(f"[FS] HopScheduledGS2Drone: unknown target_freq {target_freq}")
                 return action_time
         else:
-            target = self.channels.next_channel()
+            # На wifi_channel -> первый из freq_sel, иначе следующий в списке
+            if self.channels.current.freq == self.channels.reserve.freq:
+                target = self.channels.first_freq_sel_channel
+            else:
+                target = self.channels.next_channel()
         if not target:
             log.msg("[FS] HopScheduledGS2Drone: no target channel")
             return action_time
@@ -337,7 +351,7 @@ class HopScheduledGS2Drone:
         elif delay > 4.0:
             log.msg(f"[FS] WARNING: hop delay {delay:.1f}s (clock skew?). Use NTP.")
 
-        log.msg(f"[FS] Scheduled hop (GS→drone) to {format_channel_freq(target.freq)} in {delay:.2f}s")
+        log.msg(f"[FS] Scheduled hop (GS->drone) to {format_channel_freq(target.freq)} in {delay:.2f}s")
         d = task.deferLater(reactor, delay, None)
         d.addCallback(lambda _: switch_wifiradio_to_channel(self.manager, self.channels, target))
         return action_time
@@ -351,7 +365,7 @@ class FrequencySelection:
     Каналы, score, статистика по каналам. Держит список каналов и состояние (текущий канал, резерв).
     Переключение радио не вызывает — для хопов используйте снаружи:
       HopLocalOnly(manager, self.channels) — только локально;
-      HopScheduledGS2Drone(manager, self.channels) — запланированный хоп GS→дрон.
+      HopScheduledGS2Drone(manager, self.channels) — запланированный хоп GS->дрон.
     """
 
     def __init__(self, manager):
@@ -361,19 +375,11 @@ class FrequencySelection:
         freq_sel_channels = list(settings.common.freq_sel_channels)
         self.channels = Channels(self, wifi_channel, wifi_channel, freq_sel_channels)
         self.hop_local = HopLocalOnly(manager, self.channels)
+        self.hop_at_time = HopScheduledGS2Drone(manager, self.channels)
         log.msg(f"[FS] Initialized (hops disabled). Channel: {format_channel_freq(self.channels.current.freq)}")
 
     def is_enabled(self):
         return self.enabled and self.channels.count > 1
-
-    # заглушка на будущее
-    # def is_ready_for_hop(self):
-    #     """Статус разрешает хоп (connected/armed/disarmed). Для использования с HopLocalOnly / HopScheduledGS2Drone."""
-    #     if not hasattr(self.manager, 'status_manager') or not self.manager.status_manager:
-    #         return False
-    #     status = self.manager.status_manager.get_status()
-    #     return status in ["connected", "armed", "disarmed"]
-    # заглушка на будущее
 
     def reset_all_channels_stats(self):
         log.msg("[FS] Resetting all channel statistics")
@@ -382,5 +388,110 @@ class FrequencySelection:
             channel._last_packet_time = 0
             channel._score = [100]
 
-    def _on_channel_score_updated(self, channel):
-        pass
+    # ------------------- Запланированный синхронный хоп GS ↔ дрон -------------------
+    # ГС: request_hop() -> команда дрону. Дрон: handle_hop_command() (из manager) -> время в ответ, свой хоп. ГС: hop_at_drone_time(time).
+
+    def get_action_time(self, interval=1.0):
+        """Время для синхронного хопа (через interval секунд). Используется дроном при ответе на freq_sel_hop."""
+        return time.time() + interval
+
+    def handle_hop_command(self):
+        """
+        Дрон: при приёме freq_sel_hop — считает время хопа, планирует свой хоп, возвращает ответ для ГС.
+        """
+        if not self.is_enabled():
+            return {"status": "error", "error": "freq_sel disabled or single channel"}
+        action_time = self.get_action_time()
+        self.hop_at_time.schedule(action_time, target_freq=None)
+        log.msg(f"[FS] handle_hop_command: hop at {action_time:.2f}")
+        return {"status": "success", "time": action_time}
+
+    def hop_at_drone_time(self, action_time):
+        """
+        ГС: запланировать свой хоп на момент action_time (время от дрона).
+        Вызывается после получения ответа с полем "time".
+        Цель: если на wifi_channel — первый из freq_sel, иначе следующий канал.
+        """
+        def _run_hop():
+            # если не channels.current.freq не равен channels.reserve.freq тогда хоп на следующий канал
+            if self.channels.current.freq == self.channels.reserve.freq:
+                target = self.channels.first_freq_sel_channel
+            else:
+                target = self.channels.next_channel()
+            if target is None or target.freq == self.channels.current.freq:
+                log.msg("[FS] hop_at_drone_time: skip (on target or no next)")
+                return
+            return switch_wifiradio_to_channel(self.manager, self.channels, target)
+
+        delay = max(0.0, action_time - time.time())
+        log.msg(f"[FS] hop_at_drone_time: hop in {delay:.2f}s")
+        return task.deferLater(reactor, delay, _run_hop)
+
+    def request_hop(self):
+        """
+        ГС: отправить команду дрону (по исходящему или входящему соединению), по ответу вызвать hop_at_drone_time(time).
+        Returns: Deferred. На ГС использует send_command_to_drone, если есть.
+        """
+        if not self.is_enabled():
+            return defer.fail(Exception("freq_sel disabled or single channel"))
+        cmd = {"command": "freq_sel_hop"}
+        if hasattr(self.manager, "send_command_to_drone"):
+            d = self.manager.send_command_to_drone(cmd)
+        elif hasattr(self.manager, "client_f") and self.manager.client_f is not None:
+            d = self.manager.client_f.send_command(cmd)
+        else:
+            return defer.fail(Exception("no way to send command to drone (no send_command_to_drone, no client_f)"))
+        if d is None:
+            return defer.fail(Exception("send_command returned None, connection not ready"))
+
+        def on_response(res):
+            action_time = res.get("time")
+            if action_time is None:
+                raise ValueError("No 'time' in hop response")
+            return self.hop_at_drone_time(action_time)
+
+        d.addCallback(on_response)
+        return d
+
+    def _on_channel_score_updated(self, channel, per=None):
+        """
+        При обновлении score канала: если PER в диапазоне [40, 80]% и статус
+        connected/armed/disarmed — инициировать запланированный хоп (только на ГС).
+        lost и recovery исключены: хопы по PER не выполняются.
+        per передаётся из Channel._update_score() — тот же PER, что выведен в лог (нет разбежки).
+        """
+        if not self.is_enabled():
+            return
+        # Только для текущего канала и только в допустимых статусах
+        # делаю проверки IF NOT что бы исключить нежелательный исход запуска 
+        sm = getattr(self.manager, "status_manager", None)
+        if not sm:
+            return
+        status = sm.get_status()
+        if status not in ("connected", "armed", "disarmed"):
+            return
+        if channel is not self.channels.current:
+            return
+        # делаю проверки IF NOT что бы исключить нежелательный исход запуска
+
+        if per is None:
+            per = calculate_per(channel._measurements, SCORE_FRAMES)
+        if per < PER_HOP_MIN or per > PER_HOP_MAX:
+            return
+
+        now = time.time()
+        last = getattr(self, "_last_per_hop_time", None)
+        if last is not None and (now - last) < PER_HOP_COOLDOWN_SEC:
+            return
+
+        # Инициировать запланированный хоп может только ГС (есть send_command_to_drone или client_f)
+        if not hasattr(self.manager, "send_command_to_drone") and not (
+            hasattr(self.manager, "client_f") and self.manager.client_f is not None
+        ):
+            return
+
+        self._last_per_hop_time = now
+        log.msg(f"[FS] PER {per}% in [{PER_HOP_MIN},{PER_HOP_MAX}]%, status={status} -> scheduled hop")
+        d = self.request_hop()
+        if d is not None:
+            d.addErrback(lambda err: log.msg(f"[FS] PER-based hop failed: {err}"))

@@ -3,7 +3,7 @@ State machine for link status. Same logic on both drone and GS.
 
 Two different situations:
 - Cold start: устройство только запустилось, ещё ни разу не имело связи (waiting, never left).
-- Link loss: связь была, потом пропала → lost → recovery. _status_before_lost хранит состояние до потери.
+- Link loss: связь была, потом пропала -> lost -> recovery. _status_before_lost хранит состояние до потери.
 
 Различать: is_cold_start() vs is_after_link_loss(). После перезагрузки дрона: GS в recovery
 (потеря связи), дрон в waiting (холодный старт) — по ним можно синхронизировать состояние.
@@ -58,7 +58,7 @@ class WaitingState(ConnectionState):
         pass
 
     def on_periodic_check(self, now: float, time_since_packet: float | None):
-        # Одинаково для дрона и ГС: стабильный радио-линк без TCP → переход в connected
+        # Одинаково для дрона и ГС: стабильный радио-линк без TCP -> переход в connected
         if time_since_packet is None or time_since_packet > self.WAITING_LINK_ALIVE_SEC:
             return
         entered = getattr(self, "_waiting_entered_at", None)
@@ -80,7 +80,7 @@ class ConnectedState(ConnectionState):
         self.manager._transition_to("disarmed")
 
     def on_periodic_check(self, now: float, time_since_packet: float | None):
-        # Единый сценарий для дрона и ГС: таймаут пакетов → lost (как в armed/disarmed)
+        # Единый сценарий для дрона и ГС: таймаут пакетов -> lost (как в armed/disarmed)
         if time_since_packet is not None and time_since_packet > self.manager.PACKET_TIMEOUT:
             self.manager._transition_to("lost")
             self.manager._lost_since = now
@@ -132,7 +132,7 @@ class LostState(ConnectionState):
             if previous_status in ("connected", "armed", "disarmed"):
                 first_ch = fs.channels.first_freq_sel_channel
                 if first_ch:
-                    log.msg(f"[SM] → Lost: авто-хоп на первый канал {format_channel_freq(first_ch.freq)} "
+                    log.msg(f"[SM] -> Lost: авто-хоп на первый канал {format_channel_freq(first_ch.freq)} "
                             f"(пред. состояние: {previous_status})")
                     fs.hop_local.to_first(delay=0)
             else:
