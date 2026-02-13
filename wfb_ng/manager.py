@@ -58,7 +58,7 @@ class ManagerJSONClient(protocol.Protocol):
             msg = json.loads(self._buffer.decode())
             self._buffer = b""
             # На дроне: команды от GS могут приходить по этому же соединению (входящее для GS = исходящее для дрона)
-            if self.manager.get_type() == "drone" and msg.get("command") in ("init", "freq_sel_hop", "tx_power", "update_config"):
+            if self.manager.get_type() == "drone" and msg.get("command") in ("init", "freq_sel_hop", "tx_power", "update_config", "set_status"):
                 response = self.manager.process_command_message(msg)
                 self.transport.write(json.dumps(response).encode())
                 return
@@ -291,13 +291,25 @@ class Manager:
         response = {"status": "success"}
         command = message.get("command")
         if command == "init":
-            if message.get("freq_sel", {}).get("enabled") and self.frequency_selection.is_enabled():
-                pass
-            return self.process_init_command(message)
+            result = self.process_init_command(message)
+            if result.get("status") == "success" and getattr(self, "status_manager", None):
+                sync_status = message.get("status")
+                if sync_status in ("connected", "armed", "disarmed"):
+                    self.status_manager._transition_to(sync_status)
+            return result
         if command == "freq_sel_hop":
             # Дрон считает action_time, планирует свой хоп на этот момент, отдаёт время ГС для синхронного хопа
             hop_response = self.frequency_selection.handle_hop_command()
             return {**response, **hop_response}
+        if command == "set_status":
+            # Синхронизация статуса с ГС только для connected/armed/disarmed. Работает только при
+            # нормальной связи; при потере связи команда не дойдёт — это нормально. lost/recovery
+            # на дроне всегда по локальному таймауту пакетов (без команд от ГС).
+            status = message.get("status")
+            if status and getattr(self, "status_manager", None) and status in ("connected", "armed", "disarmed"):
+                self.status_manager._transition_to(status)
+                log.msg("[Drone] Статус синхронизирован с ГС: %s" % status)
+            return response
         elif command == "update_config":
             self.update_config(message.get("settings"))
         elif command == "tx_power":
@@ -393,7 +405,8 @@ class GSManager(Manager):
             return
         init_cmd = {
             "command": "init",
-            "freq_sel": {"enabled": self.frequency_selection.is_enabled()}
+            "freq_sel": {"enabled": self.frequency_selection.is_enabled()},
+            "status": self.status_manager.get_status(),
         }
         log.msg("[GS] Sending init over incoming connection (client not ready)")
         self._last_init_attempt = time.time()
@@ -425,7 +438,11 @@ class GSManager(Manager):
         )
         if client_ready:
             self._last_init_attempt = time.time()
-            init_cmd = {"command": "init", "freq_sel": {"enabled": self.frequency_selection.is_enabled()}}
+            init_cmd = {
+                "command": "init",
+                "freq_sel": {"enabled": self.frequency_selection.is_enabled()},
+                "status": self.status_manager.get_status(),
+            }
             log.msg("[GS] Init retry over client connection")
             d = self.client_f.send_command(init_cmd)
             if d is None:
@@ -457,7 +474,8 @@ class GSManager(Manager):
         self._last_init_attempt = time.time()
         d = self.client_f.send_command({
             "command": "init",
-            "freq_sel": {"enabled": self.frequency_selection.is_enabled()}
+            "freq_sel": {"enabled": self.frequency_selection.is_enabled()},
+            "status": self.status_manager.get_status(),
         })
         if d is None:
             return
@@ -535,7 +553,8 @@ class DroneManager(Manager):
         reactor.listenTCP(14888, self.server_f)
 
     def on_status_changed(self, old_status, new_status):
-        """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS."""
+        """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS.
+        Отправляем статус дрону, чтобы ГС и дрон были в одном состоянии (на дроне нет MAVLink)."""
         if not self.status_manager:
             return
         if new_status == self.status_manager.STATUS_ARMED:
@@ -545,6 +564,12 @@ class DroneManager(Manager):
             self.power_selection.set_minimum_power()
         elif new_status == self.status_manager.STATUS_CONNECTED:
             self.power_selection.set_minimum_power()
+        # Отправка статуса дрону — best-effort: при потере связи команда не дойдёт (ошибки ок).
+        # lost/recovery дрон определяет сам по таймауту пакетов, не по команде.
+        if new_status in (self.status_manager.STATUS_CONNECTED, self.status_manager.STATUS_ARMED, self.status_manager.STATUS_DISARMED):
+            d = self.send_command_to_drone({"command": "set_status", "status": new_status})
+            if d is not None:
+                d.addErrback(lambda f: None)
 
     def _cleanup(self):
         if hasattr(self, 'power_selection') and self.power_selection:
