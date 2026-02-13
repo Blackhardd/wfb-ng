@@ -90,7 +90,9 @@ def color_str(arg, c, bold=False):
 class ConsoleObserver(object):
     def emit(self, eventDict):
         txt = '\n        '.join(str(eventDict['log_text']).rstrip().split('\n'))
-        print('[%s] %s' % (eventDict['system'], txt), flush=True)
+        # print('[%s] %s' % (eventDict['system'], txt), flush=True)
+        # Выводим только текст сообщения, без префикса [module.function #level]
+        print(txt, flush=True)
 
 
 def __find_caller(depth):

@@ -2,7 +2,7 @@
 Frequency Selection — каналы, фабрика каналов, score/статистика по каналам.
 Переключение каналов (хопы) отключено по умолчанию.
 """
-import time
+import time 
 from twisted.python import log
 from twisted.internet import reactor, task, defer
 
