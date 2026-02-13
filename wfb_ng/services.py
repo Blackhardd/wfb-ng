@@ -208,18 +208,19 @@ def init_mavlink(service_name, cfg, wlans, link_id, ant_sel_f, is_cluster, rx_on
 
     rx_hooks = []
     tx_hooks = []
-    # ================== ТОЧКА ВХОДА StatusManager для MAVLink ==========================
+    # ================== ТОЧКА ВХОДА StatusManager и для MAVLink ==========================
 
-    status_manager = None  # менеджер статуса
-    if manager and hasattr(manager, 'status_manager') and manager.status_manager:
-        status_manager = manager.status_manager  # StatusManager для отслеживания статуса
+    status_manager = None  # StatusManager на только GS 
+    if manager:
+        if hasattr(manager, 'status_manager') and manager.status_manager:
+            status_manager = manager.status_manager
 
     if cfg.call_on_arm or cfg.call_on_disarm or status_manager:
-        arm_proto = MavlinkARMProtocol(cfg.call_on_arm, cfg.call_on_disarm, status_manager=status_manager)  # MavlinkARMProtocol для arm/disarm
-        rx_hooks.append(arm_proto.dataReceived)  # RX хук arm/disarm
-        tx_hooks.append(arm_proto.dataReceived)  # TX хук arm/disarm
+        arm_proto = MavlinkARMProtocol(cfg.call_on_arm, cfg.call_on_disarm, status_manager=status_manager)
+        rx_hooks.append(arm_proto.dataReceived)
+        tx_hooks.append(arm_proto.dataReceived)
         if status_manager:
-            log.msg('StatusManager: Integration is complete')  # Лог интеграции
+            log.msg('StatusManager: Integration is complete')
 
     if cfg.log_messages and ant_sel_f.logger is not None:
         mav_log_proto = MavlinkLoggerProtocol(ant_sel_f.logger)  # логгер mavlink
