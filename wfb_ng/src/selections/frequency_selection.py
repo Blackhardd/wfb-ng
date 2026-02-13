@@ -30,10 +30,13 @@ PER_HOP_MIN = 40
 PER_HOP_MAX = 80
 PER_HOP_COOLDOWN_SEC = 15
 
+# Один лог по score на процесс не чаще раза в секунду (для дрона и ГС)
+_last_channel_score_log_time = [0.0]
 
 
 class Channel:
     """Одна частота: измерения (RSSI, PER, SNR), score, callback при обновлении. Не знает про другие каналы."""
+
     def __init__(self, freq):
         self._freq = freq
         self._score = [100]
@@ -50,9 +53,12 @@ class Channel:
         pen_snr = SCORE_SNR_WEIGHT * Utils.clamp((SCORE_SNR_MIN_THRESHOLD - snr) / SCORE_SNR_MIN_THRESHOLD, 0.0, 1.0)
         score = 100 - (pen_per + pen_snr)
         self._score.append(score)
-        rssi_str = f"{rssi} dBm" if rssi is not None else "N/A"
-        ch_str = format_channel_freq(self._freq)
-        log.msg(f"Channel {ch_str} - RSSI: {rssi_str}, PER: {per}%, SNR: {snr:.2f} dB, Score: {score:.2f}")
+        now = time.time()
+        if now - _last_channel_score_log_time[0] >= 1.0:
+            _last_channel_score_log_time[0] = now
+            rssi_str = f"{rssi} dBm" if rssi is not None else "N/A"
+            ch_str = format_channel_freq(self._freq)
+            log.msg(f"Канал:{ch_str} - RSSI: {rssi_str}, PER: {per}%, SNR: {snr:.2f} dB, Score: {score:.2f}")
         if self._on_score_updated:
             self._on_score_updated(self, per=per)
 

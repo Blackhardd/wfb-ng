@@ -213,10 +213,9 @@ class PowerSelection:
         self._last_change_time = 0.0    # Время последнего изменения уровня
         self._last_command_time = 0.0   # Время последней применённой команды tx_power с GS (throttle т.е задержка)
 
-        # Периодический лог статистики на дроне
-        self._lc_log = task.LoopingCall(self._log_drone_stats)
-        self._lc_log.start(DRONE_STATS_LOG_INTERVAL, now=True)
-        self._lc_check = None # Периодический опрос RSSI
+        # Периодический лог "Drone - Channel" отключён — канал/RSSI/PER/SNR уже пишет frequency_selection раз в секунду
+        self._lc_log = None
+        self._lc_check = None  # Периодический опрос RSSI
 
         log.msg(f"[PS] Инициализация: enabled={self.enabled}, levels={self.levels}")
 
@@ -238,8 +237,10 @@ class PowerSelection:
             return
 
         new_state = self._states[state_name]
-
         old_name = self._current_state.name() if self._current_state else "none"
+        if old_name == state_name:
+            return  # уже в этом состоянии, не логируем и не дергаем on_exit/on_enter
+
         if self._current_state:
             self._current_state.on_exit()
 

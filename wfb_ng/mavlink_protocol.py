@@ -154,19 +154,15 @@ class MavlinkARMProtocol(object):
     def messageReceived(self, l2_headers, message):
         seq, sys_id, comp_id, msg_id = l2_headers
 
-        # Sander 24.01.2026: Логирование всех команд от GCS и моментальная реакция на ARM/DISARM
+        # Логирование команд от GCS и моментальная реакция на ARM/DISARM (остальные только прокидываются)
         if msg_id in (MAVLINK_MSG_ID_COMMAND_LONG, MAVLINK_MSG_ID_COMMAND_INT):
             try:
                 msgname, fmap = unpack_mavlink(msg_id, message)
                 cmd_id = fmap.get('command')
-                cmd_name = "UNKNOWN"
-                try:
-                    cmd_name = enums['MAV_CMD'][cmd_id].name
-                except (KeyError, AttributeError):
-                    cmd_name = f"CMD#{cmd_id}"
-                
-                log.msg(f'Увага! MavARMProtocol, команда: [sys:{sys_id} comp:{comp_id}]: {cmd_name} ({cmd_id})')
-                
+                # В лог только обрабатываемая команда ARM/DISARM (400)
+                if cmd_id == 400:  # MAV_CMD_COMPONENT_ARM_DISARM
+                    log.msg(f'MAVLINK команда от GCS: [sys:{sys_id} comp:{comp_id}]: MAV_CMD_COMPONENT_ARM_DISARM (400)')
+
                 # Моментальная реакция на команду arm/disarm (не дожидаясь heartbeat от дрона)
                 if cmd_id == 400: # MAV_CMD_COMPONENT_ARM_DISARM
                     param1 = fmap.get('param1')

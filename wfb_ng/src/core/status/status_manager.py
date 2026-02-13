@@ -64,7 +64,7 @@ class WaitingState(ConnectionState):
         entered = getattr(self, "_waiting_entered_at", None)
         if entered is None or (now - entered) < self.WAITING_RADIO_FALLBACK_SEC:
             return
-        log.msg("[SM] Waiting: radio stable without TCP handshake, fallback -> connected")
+        log.msg("[SM] Ожидание: радио стабильно без TCP рукопожатия, переход к connected (fallback)")
         self.manager._transition_to("connected")
 
 class ConnectedState(ConnectionState):

@@ -96,13 +96,16 @@ class ManagerJSONClientFactory(ReconnectingClientFactory):
         self.protocol_instance = p
         return p
     
+    def _reason_str(self, reason):
+        return reason.getErrorMessage() if hasattr(reason, 'getErrorMessage') else str(reason)
+
     def clientConnectionLost(self, connector, reason): # обработка потери соединения
-        log.msg("Manager connection lost:", reason)
+        log.msg("Manager connection lost: %s" % self._reason_str(reason))
         self.manager.on_disconnected(reason)
         ReconnectingClientFactory.clientConnectionLost(self, connector, reason)
 
     def clientConnectionFailed(self, connector, reason): # обработка неудачного соединения
-        log.msg("Manager connection failed:", reason)
+        log.msg("Manager connection failed: %s" % self._reason_str(reason))
         self.manager.on_disconnected(reason)
         ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
     
@@ -314,7 +317,8 @@ class Manager:
             self.status_manager._transition_to("connected")
 
     def on_disconnected(self, reason):
-        log.msg(f"Management connection closed: {reason}")
+        err = reason.getErrorMessage() if hasattr(reason, 'getErrorMessage') else str(reason)
+        log.msg("Management connection closed: %s" % err)
         self._is_connected = False
 
     def on_status_changed(self, old_status, new_status):
@@ -401,7 +405,7 @@ class GSManager(Manager):
             return x
         d.addBoth(_cancel_timeout)
         d.addCallback(self.on_connection_ready)
-        d.addErrback(lambda err: log.msg("Init over incoming connection failed:", err))
+        d.addErrback(lambda err: log.msg("Init over incoming connection failed: %s" % (err.getErrorMessage() if hasattr(err, 'getErrorMessage') else str(err))))
 
     def _init_timeout_fire(self, d):
         if d.called:
@@ -433,7 +437,7 @@ class GSManager(Manager):
                 return x
             d.addBoth(_cancel_timeout_retry)
             d.addCallback(self.on_connection_ready)
-            d.addErrback(lambda err: log.msg("Init retry failed:", err))
+            d.addErrback(lambda err: log.msg("Init retry failed: %s" % (err.getErrorMessage() if hasattr(err, 'getErrorMessage') else str(err))))
         elif self._incoming_server_protocol and self._incoming_server_protocol.transport:
             self._try_init_over_incoming()
 
@@ -464,7 +468,7 @@ class GSManager(Manager):
             return x
         d.addBoth(_cancel_timeout_client)
         d.addCallback(self.on_connection_ready)
-        d.addErrback(lambda err: log.msg("Error initializing connection:", err))
+        d.addErrback(lambda err: log.msg("Error initializing connection: %s" % (err.getErrorMessage() if hasattr(err, 'getErrorMessage') else str(err))))
 
     def on_connection_ready(self, message):
         if self._is_connected:
