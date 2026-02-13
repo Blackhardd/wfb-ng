@@ -382,6 +382,10 @@ class FrequencySelection:
         self.channels = Channels(self, wifi_channel, wifi_channel, freq_sel_channels)
         self.hop_local = HopLocalOnly(manager, self.channels)
         self.hop_at_time = HopScheduledGS2Drone(manager, self.channels)
+        # Только ссылки на текущие Deferred (не флаги). Очищаются при завершении/отмене — после
+        # восстановления в connected/armed/disarmed новые запланированные хопы запускаются как обычно.
+        self._pending_hop_request_d = None   # Deferred от request_hop() (ожидание ответа от дрона)
+        self._pending_scheduled_hop_d = None  # Deferred от hop_at_drone_time (deferLater)
         log.msg(f"[FS] Initialized (hops disabled). Channel: {format_channel_freq(self.channels.current.freq)}")
 
     def is_enabled(self):
@@ -431,7 +435,15 @@ class FrequencySelection:
 
         delay = max(0.0, action_time - time.time())
         log.msg(f"[FS] hop_at_drone_time: hop in {delay:.2f}s")
-        return task.deferLater(reactor, delay, _run_hop)
+        d = task.deferLater(reactor, delay, _run_hop)
+        self._pending_scheduled_hop_d = d
+
+        def _clear_pending_scheduled(_):
+            self._pending_scheduled_hop_d = None
+            return _
+
+        d.addBoth(_clear_pending_scheduled)
+        return d
 
     def request_hop(self):
         """
@@ -458,6 +470,24 @@ class FrequencySelection:
 
         d.addCallback(on_response)
         return d
+
+    def cancel_pending_scheduled_hop(self):
+        """
+        Отменить запланированный PER-based хоп (request_hop / hop_at_drone_time).
+        Вызывается при входе в lost, чтобы выполнялся только локальный авто-хоп на первый канал.
+        """
+        cancelled = False
+        for name in ("_pending_scheduled_hop_d", "_pending_hop_request_d"):
+            pending = getattr(self, name, None)
+            if pending is not None:
+                try:
+                    pending.cancel()
+                except Exception:
+                    pass
+                setattr(self, name, None)
+                cancelled = True
+        if cancelled:
+            log.msg("[FS] Отменён запланированный PER-хоп (приоритет — локальный хоп в lost)")
 
     def _on_channel_score_updated(self, channel, per=None):
         """
@@ -500,4 +530,11 @@ class FrequencySelection:
         log.msg(f"[FS] PER {per}% in [{PER_HOP_MIN},{PER_HOP_MAX}]%, status={status} -> scheduled hop")
         d = self.request_hop()
         if d is not None:
+            self._pending_hop_request_d = d
+
+            def _clear_pending_request(r):
+                self._pending_hop_request_d = None
+                return r
+
+            d.addBoth(_clear_pending_request)
             d.addErrback(lambda err: log.msg(f"[FS] PER-based hop failed: {err}"))

@@ -129,6 +129,9 @@ class LostState(ConnectionState):
         # Один авто-хоп на первый канал из freq_sel только если пришли из "нормального" состояния (не из waiting/recovery).
         fs = self.manager._get_frequency_selection()
         if fs and fs.is_enabled():
+            # Отменить любой уже запланированный PER-хоп, чтобы не конкурировал с локальным хопом в lost.
+            if hasattr(fs, "cancel_pending_scheduled_hop"):
+                fs.cancel_pending_scheduled_hop()
             if previous_status in ("connected", "armed", "disarmed"):
                 first_ch = fs.channels.first_freq_sel_channel
                 if first_ch:
