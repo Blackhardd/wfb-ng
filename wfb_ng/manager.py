@@ -553,8 +553,7 @@ class DroneManager(Manager):
         reactor.listenTCP(14888, self.server_f)
 
     def on_status_changed(self, old_status, new_status):
-        """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS.
-        Отправляем статус дрону, чтобы ГС и дрон были в одном состоянии (на дроне нет MAVLink)."""
+        """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS."""
         if not self.status_manager:
             return
         if new_status == self.status_manager.STATUS_ARMED:
@@ -564,12 +563,7 @@ class DroneManager(Manager):
             self.power_selection.set_minimum_power()
         elif new_status == self.status_manager.STATUS_CONNECTED:
             self.power_selection.set_minimum_power()
-        # Отправка статуса дрону — best-effort: при потере связи команда не дойдёт (ошибки ок).
-        # lost/recovery дрон определяет сам по таймауту пакетов, не по команде.
-        if new_status in (self.status_manager.STATUS_CONNECTED, self.status_manager.STATUS_ARMED, self.status_manager.STATUS_DISARMED):
-            d = self.send_command_to_drone({"command": "set_status", "status": new_status})
-            if d is not None:
-                d.addErrback(lambda f: None)
+        # Отправка статуса дрону только на ГС (у дрона нет send_command_to_drone).
 
     def _cleanup(self):
         if hasattr(self, 'power_selection') and self.power_selection:

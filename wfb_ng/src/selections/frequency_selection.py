@@ -30,10 +30,6 @@ PER_HOP_MIN = 40
 PER_HOP_MAX = 80
 PER_HOP_COOLDOWN_SEC = 15
 
-# Один лог по score на процесс не чаще раза в секунду (для дрона и ГС)
-_last_channel_score_log_time = [0.0]
-
-
 class Channel:
     """Одна частота: измерения (RSSI, PER, SNR), score, callback при обновлении. Не знает про другие каналы."""
 
@@ -53,14 +49,18 @@ class Channel:
         pen_snr = SCORE_SNR_WEIGHT * Utils.clamp((SCORE_SNR_MIN_THRESHOLD - snr) / SCORE_SNR_MIN_THRESHOLD, 0.0, 1.0)
         score = 100 - (pen_per + pen_snr)
         self._score.append(score)
-        now = time.time()
-        if now - _last_channel_score_log_time[0] >= 1.0:
-            _last_channel_score_log_time[0] = now
-            rssi_str = f"{rssi} dBm" if rssi is not None else "N/A"
-            ch_str = format_channel_freq(self._freq)
-            log.msg(f"Канал:{ch_str} - RSSI: {rssi_str}, PER: {per}%, SNR: {snr:.2f} dB, Score: {score:.2f}")
         if self._on_score_updated:
             self._on_score_updated(self, per=per)
+
+    def get_stats_for_log(self):
+        """Текущие rssi, per, snr, score для лога (без изменения состояния)."""
+        rssi = calculate_rssi(self._measurements)
+        per = calculate_per(self._measurements, SCORE_FRAMES)
+        snr = calculate_snr(self._measurements, SCORE_FRAMES)
+        pen_per = SCORE_PER_WEIGHT * Utils.clamp(per / SCORE_PER_MAX_PENALTY, 0.0, 1.0)
+        pen_snr = SCORE_SNR_WEIGHT * Utils.clamp((SCORE_SNR_MIN_THRESHOLD - snr) / SCORE_SNR_MIN_THRESHOLD, 0.0, 1.0)
+        score = 100 - (pen_per + pen_snr)
+        return rssi, per, snr, score
 
     @property
     def freq(self):
@@ -386,10 +386,21 @@ class FrequencySelection:
         # восстановления в connected/armed/disarmed новые запланированные хопы запускаются как обычно.
         self._pending_hop_request_d = None   # Deferred от request_hop() (ожидание ответа от дрона)
         self._pending_scheduled_hop_d = None  # Deferred от hop_at_drone_time (deferLater)
+        # Лог канала раз в секунду и на ГС, и на дроне (на дроне stats могут приходить реже — лог не зависел от них)
+        self._channel_log_task = task.LoopingCall(self._log_current_channel_once)
+        self._channel_log_task.start(1.0)
         log.msg(f"[FS] Initialized (hops disabled). Channel: {format_channel_freq(self.channels.current.freq)}")
 
     def is_enabled(self):
         return self.enabled and self.channels.count > 1
+
+    def _log_current_channel_once(self):
+        """Раз в секунду вывести в лог канал, RSSI, PER, SNR, Score (одинаково на ГС и дроне)."""
+        ch = self.channels.current
+        rssi, per, snr, score = ch.get_stats_for_log()
+        rssi_str = f"{rssi} dBm" if rssi is not None else "N/A"
+        ch_str = format_channel_freq(ch.freq)
+        log.msg(f"Канал:{ch_str} - RSSI: {rssi_str}, PER: {per}%, SNR: {snr:.2f} dB, Score: {score:.2f}")
 
     def reset_all_channels_stats(self):
         log.msg("[FS] Resetting all channel statistics")
@@ -520,10 +531,9 @@ class FrequencySelection:
         if last is not None and (now - last) < PER_HOP_COOLDOWN_SEC:
             return
 
-        # Инициировать запланированный хоп может только ГС (есть send_command_to_drone или client_f)
-        if not hasattr(self.manager, "send_command_to_drone") and not (
-            hasattr(self.manager, "client_f") and self.manager.client_f is not None
-        ):
+        # Инициировать запланированный PER-хоп может только ГС (у ГС есть send_command_to_drone).
+        # На дроне этого метода нет — не вызываем request_hop() на дроне.
+        if not hasattr(self.manager, "send_command_to_drone"):
             return
 
         self._last_per_hop_time = now
