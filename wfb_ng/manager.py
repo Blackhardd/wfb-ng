@@ -78,6 +78,7 @@ class ManagerJSONClient(protocol.Protocol):
             self._process_queue()
         return d
 
+
 # Фабрика для управления подключением к GS и Drone по JSON через TCP socket
 class ManagerJSONClientFactory(ReconnectingClientFactory):
     protocol = ManagerJSONClient
