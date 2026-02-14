@@ -18,17 +18,41 @@ from ..core.data import (
     format_channel_freq,
 )
 
-SCORE_FRAMES = 3
-SCORE_PER_WEIGHT = 75
-SCORE_SNR_WEIGHT = 25
-SCORE_PER_MAX_PENALTY = 10
-SCORE_SNR_MIN_THRESHOLD = 20
-CHANNEL_KEEP_HISTORY = 5
+def _score_frames():
+    return getattr(settings.common, "freq_sel_score_frames", 3)
 
-# Авто-хоп по PER: только при PER в этом диапазоне и только в connected/armed/disarmed
-PER_HOP_MIN = 40
-PER_HOP_MAX = 80
-PER_HOP_COOLDOWN_SEC = 15
+
+def _score_per_weight():
+    return getattr(settings.common, "freq_sel_score_per_weight", 75)
+
+
+def _score_snr_weight():
+    return getattr(settings.common, "freq_sel_score_snr_weight", 25)
+
+
+def _score_per_max_penalty():
+    return getattr(settings.common, "freq_sel_score_per_max_penalty", 10)
+
+
+def _score_snr_min_threshold():
+    return getattr(settings.common, "freq_sel_score_snr_min_threshold", 20)
+
+
+def _channel_keep_history():
+    return getattr(settings.common, "freq_sel_channel_keep_history", 5)
+
+
+def _per_hop_min():
+    return getattr(settings.common, "freq_sel_per_hop_min", 25)
+
+
+def _per_hop_max():
+    return getattr(settings.common, "freq_sel_per_hop_max", 80)
+
+
+def _per_hop_cooldown_sec():
+    return getattr(settings.common, "freq_sel_per_hop_cooldown_sec", 15)
+
 
 class Channel:
     """Одна частота: измерения (RSSI, PER, SNR), score, callback при обновлении. Не знает про другие каналы."""
@@ -42,11 +66,14 @@ class Channel:
         self._on_score_updated = None
 
     def _update_score(self):
+        n = _score_frames()
         rssi = calculate_rssi(self._measurements)
-        per = calculate_per(self._measurements, SCORE_FRAMES)
-        snr = calculate_snr(self._measurements, SCORE_FRAMES)
-        pen_per = SCORE_PER_WEIGHT * Utils.clamp(per / SCORE_PER_MAX_PENALTY, 0.0, 1.0)
-        pen_snr = SCORE_SNR_WEIGHT * Utils.clamp((SCORE_SNR_MIN_THRESHOLD - snr) / SCORE_SNR_MIN_THRESHOLD, 0.0, 1.0)
+        per = calculate_per(self._measurements, n)
+        snr = calculate_snr(self._measurements, n)
+        max_pen = _score_per_max_penalty()
+        snr_thr = _score_snr_min_threshold()
+        pen_per = _score_per_weight() * Utils.clamp(per / max_pen, 0.0, 1.0)
+        pen_snr = _score_snr_weight() * Utils.clamp((snr_thr - snr) / snr_thr, 0.0, 1.0)
         score = 100 - (pen_per + pen_snr)
         self._score.append(score)
         if self._on_score_updated:
@@ -54,11 +81,14 @@ class Channel:
 
     def get_stats_for_log(self):
         """Текущие rssi, per, snr, score для лога (без изменения состояния)."""
+        n = _score_frames()
         rssi = calculate_rssi(self._measurements)
-        per = calculate_per(self._measurements, SCORE_FRAMES)
-        snr = calculate_snr(self._measurements, SCORE_FRAMES)
-        pen_per = SCORE_PER_WEIGHT * Utils.clamp(per / SCORE_PER_MAX_PENALTY, 0.0, 1.0)
-        pen_snr = SCORE_SNR_WEIGHT * Utils.clamp((SCORE_SNR_MIN_THRESHOLD - snr) / SCORE_SNR_MIN_THRESHOLD, 0.0, 1.0)
+        per = calculate_per(self._measurements, n)
+        snr = calculate_snr(self._measurements, n)
+        max_pen = _score_per_max_penalty()
+        snr_thr = _score_snr_min_threshold()
+        pen_per = _score_per_weight() * Utils.clamp(per / max_pen, 0.0, 1.0)
+        pen_snr = _score_snr_weight() * Utils.clamp((snr_thr - snr) / snr_thr, 0.0, 1.0)
         score = 100 - (pen_per + pen_snr)
         return rssi, per, snr, score
 
@@ -76,10 +106,10 @@ class Channel:
         if stats.p_total > 0:
             self._last_packet_time = time.time()
         self._measurements.append(rx_id, stats)
-        # Обновлять score когда есть достаточно данных для расчёта PER (SCORE_FRAMES).
+        # Обновлять score когда есть достаточно данных для расчёта PER.
 
         lengths = [len(v) for v in self._measurements.values() if len(v) > 0]
-        if lengths and min(lengths) >= SCORE_FRAMES:
+        if lengths and min(lengths) >= _score_frames():
             self._update_score()
 
     def set_on_score_updated(self, callback):
@@ -88,11 +118,12 @@ class Channel:
 
     #
     def clear_measurements(self):
+        keep = _channel_keep_history()
         for stream in [self._measurements.video, self._measurements.mavlink, self._measurements.tunnel]:
-            if len(stream) > CHANNEL_KEEP_HISTORY:
-                stream[:] = stream[-CHANNEL_KEEP_HISTORY:]
-        if len(self._score) > CHANNEL_KEEP_HISTORY:
-            self._score = self._score[-CHANNEL_KEEP_HISTORY:]
+            if len(stream) > keep:
+                stream[:] = stream[-keep:]
+        if len(self._score) > keep:
+            self._score = self._score[-keep:]
         self._switched_at = time.time()
 
 class ChannelsFactory:
@@ -522,13 +553,15 @@ class FrequencySelection:
         # делаю проверки IF NOT что бы исключить нежелательный исход запуска
 
         if per is None:
-            per = calculate_per(channel._measurements, SCORE_FRAMES)
-        if per < PER_HOP_MIN or per > PER_HOP_MAX:
+            per = calculate_per(channel._measurements, _score_frames())
+        hop_min = _per_hop_min()
+        hop_max = _per_hop_max()
+        if per < hop_min or per > hop_max:
             return
 
         now = time.time()
         last = getattr(self, "_last_per_hop_time", None)
-        if last is not None and (now - last) < PER_HOP_COOLDOWN_SEC:
+        if last is not None and (now - last) < _per_hop_cooldown_sec():
             return
 
         # Инициировать запланированный PER-хоп может только ГС (у ГС есть send_command_to_drone).
@@ -537,7 +570,7 @@ class FrequencySelection:
             return
 
         self._last_per_hop_time = now
-        log.msg(f"[FS] PER {per}% in [{PER_HOP_MIN},{PER_HOP_MAX}]%, status={status} -> scheduled hop")
+        log.msg(f"[FS] PER {per}% in [{hop_min},{hop_max}]%, status={status} -> scheduled hop")
         d = self.request_hop()
         if d is not None:
             self._pending_hop_request_d = d
