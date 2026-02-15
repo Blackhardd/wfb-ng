@@ -54,6 +54,21 @@ def _per_hop_cooldown_sec():
     return getattr(settings.common, "freq_sel_per_hop_cooldown_sec", 15)
 
 
+def _snr_hop_threshold():
+    """SNR dB below which hop is triggered. 0 = disabled."""
+    return getattr(settings.common, "freq_sel_snr_hop_threshold", 0)
+
+
+def _score_hop_threshold():
+    """Score below which hop is triggered. 0 = disabled. Score 0-100."""
+    return getattr(settings.common, "freq_sel_score_hop_threshold", 0)
+
+
+def _score_hop_cooldown_sec():
+    """Cooldown for score-based (planned) hops. Longer than PER cooldown."""
+    return getattr(settings.common, "freq_sel_score_hop_cooldown_sec", 30)
+
+
 class Channel:
     """Одна частота: измерения (RSSI, PER, SNR), score, callback при обновлении. Не знает про другие каналы."""
 
@@ -533,15 +548,11 @@ class FrequencySelection:
 
     def _on_channel_score_updated(self, channel, per=None):
         """
-        При обновлении score канала: если PER в диапазоне [40, 80]% и статус
-        connected/armed/disarmed — инициировать запланированный хоп (только на ГС).
-        lost и recovery исключены: хопы по PER не выполняются.
-        per передаётся из Channel._update_score() — тот же PER, что выведен в лог (нет разбежки).
+        PER/SNR — реактивные хопы при резких скачках (короткий cooldown).
+        Score — плановые хопы заранее при плавной деградации (длинный cooldown).
         """
         if not self.is_enabled():
             return
-        # Только для текущего канала и только в допустимых статусах
-        # делаю проверки IF NOT что бы исключить нежелательный исход запуска 
         sm = getattr(self.manager, "status_manager", None)
         if not sm:
             return
@@ -550,34 +561,51 @@ class FrequencySelection:
             return
         if channel is not self.channels.current:
             return
-        # делаю проверки IF NOT что бы исключить нежелательный исход запуска
 
         if per is None:
             per = calculate_per(channel._measurements, _score_frames())
+        snr = calculate_snr(channel._measurements, _score_frames())
+        score = channel.score
         hop_min = _per_hop_min()
         hop_max = _per_hop_max()
-        if per < hop_min or per > hop_max:
+        snr_thr = _snr_hop_threshold()
+        score_thr = _score_hop_threshold()
+
+        per_trigger = hop_min <= per <= hop_max
+        snr_trigger = snr_thr > 0 and snr > 0 and snr < snr_thr
+        score_trigger = score_thr > 0 and score < score_thr
+        if not (per_trigger or snr_trigger or score_trigger):
             return
 
         now = time.time()
-        last = getattr(self, "_last_per_hop_time", None)
-        if last is not None and (now - last) < _per_hop_cooldown_sec():
+        last = getattr(self, "_last_hop_time", None)
+        reactive = per_trigger or snr_trigger
+        planned = score_trigger
+        cooldown = _per_hop_cooldown_sec() if reactive else _score_hop_cooldown_sec()
+        if last is not None and (now - last) < cooldown:
             elapsed = now - last
-            last_logged_sec = getattr(self, "_last_per_hop_log_sec", -1)
+            last_logged_sec = getattr(self, "_last_hop_log_sec", -1)
             current_sec = int(elapsed)
             if current_sec > last_logged_sec:
-                self._last_per_hop_log_sec = current_sec
-                log.msg(f"[FS] Ожидание до следующего ХОП-а: {elapsed:.1f}s")
+                self._last_hop_log_sec = current_sec
+                kind = "реактивного" if reactive else "планового"
+                log.msg(f"[FS] Ожидание до следующего {kind} ХОП-а: {elapsed:.1f}s")
             return
 
-        # Инициировать запланированный PER-хоп может только ГС (у ГС есть send_command_to_drone).
+        # Инициировать хоп может только ГС (send_command_to_drone).
         # На дроне этого метода нет — не вызываем request_hop() на дроне.
         if not hasattr(self.manager, "send_command_to_drone"):
             return
 
-        self._last_per_hop_time = now
-        self._last_per_hop_log_sec = -1
-        log.msg(f"[FS] PER {per}% in [{hop_min},{hop_max}]%, status={status} -> scheduled hop")
+        self._last_hop_time = now
+        self._last_hop_log_sec = -1
+        if per_trigger:
+            reason = f"PER {per}%"
+        elif snr_trigger:
+            reason = f"SNR {snr:.1f} dB < {snr_thr}"
+        else:
+            reason = f"score {score:.1f} < {score_thr}"
+        log.msg(f"[FS] {reason}, status={status} -> scheduled hop")
         d = self.request_hop()
         if d is not None:
             self._pending_hop_request_d = d
@@ -587,4 +615,4 @@ class FrequencySelection:
                 return r
 
             d.addBoth(_clear_pending_request)
-            d.addErrback(lambda err: log.msg(f"[FS] PER-based hop failed: {err}"))
+            d.addErrback(lambda err: log.msg(f"[FS] Hop failed: {err}"))
