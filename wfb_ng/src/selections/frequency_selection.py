@@ -562,6 +562,12 @@ class FrequencySelection:
         now = time.time()
         last = getattr(self, "_last_per_hop_time", None)
         if last is not None and (now - last) < _per_hop_cooldown_sec():
+            elapsed = now - last
+            last_logged_sec = getattr(self, "_last_per_hop_log_sec", -1)
+            current_sec = int(elapsed)
+            if current_sec > last_logged_sec:
+                self._last_per_hop_log_sec = current_sec
+                log.msg(f"[FS] Ожидание до следующего ХОП-а: {elapsed:.1f}s")
             return
 
         # Инициировать запланированный PER-хоп может только ГС (у ГС есть send_command_to_drone).
@@ -570,6 +576,7 @@ class FrequencySelection:
             return
 
         self._last_per_hop_time = now
+        self._last_per_hop_log_sec = -1
         log.msg(f"[FS] PER {per}% in [{hop_min},{hop_max}]%, status={status} -> scheduled hop")
         d = self.request_hop()
         if d is not None:

@@ -24,6 +24,8 @@ power_selection_level_list  = settings.common.power_sel_levels
 # Гистерезис (в dBm)
 RSSI_INCREASE_THRESHOLD   = -48    # RSSI ниже этого то увеличиваем мощность
 RSSI_DECREASE_THRESHOLD   = -32    # RSSI выше этого то уменьшаем мощность
+# При PER выше этого — не уменьшаем мощность (связь ненадёжная, RSSI может быть невалидным)
+PER_DECREASE_MAX          = 80     # %; при PER > 80% команда decrease не отправляется
 # Гистерезис (в dBm)
 MIN_TIME_ON_LEVEL         = 8.0    # секунд
 DRONE_STATS_LOG_INTERVAL  = 1      # Интервал лога статистики на дроне (секунды)
@@ -165,7 +167,11 @@ class GSPowerController:
         if getattr(self.manager, 'metrics_manager', None) and self.manager.metrics_manager:
             metrics = self.manager.metrics_manager.get_metrics()
         rssi = metrics.get('rssi') if metrics else None
+        per = metrics.get('per') if metrics else None
         if rssi is None:
+            return
+        # RSSI = 0 — невалидные данные (нет пакетов для измерения), не используем
+        if rssi == 0:
             return
 
         if not throttle_elapsed(self._last_command_time):
@@ -175,6 +181,9 @@ class GSPowerController:
         if rssi < RSSI_INCREASE_THRESHOLD:
             action = "increase"
         elif rssi > RSSI_DECREASE_THRESHOLD:
+            # При высоком PER связь ненадёжная — не уменьшаем мощность
+            if per is not None and per > PER_DECREASE_MAX:
+                return
             action = "decrease"
         if not action:
             return
