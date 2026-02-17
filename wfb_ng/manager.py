@@ -5,10 +5,10 @@ from twisted.python import log
 from twisted.internet import reactor, protocol, task, defer
 from twisted.internet.protocol import ReconnectingClientFactory
 
-from .src.selections.frequency_selection import FrequencySelection
-from .src.selections.power_selection import PowerSelection, GSPowerController
-from .src.core.status import StatusManager
-from .src.core.data import ConnectionMetricsManager, DataHandler
+from .sich_frequency_selection import FrequencySelection
+from .sich_power_selection import PowerSelection, GSPowerController
+from .sich_status_manager import StatusManager
+from .sich_connection import ConnectionMetricsManager, DataHandler
 from .conf import settings
 
 

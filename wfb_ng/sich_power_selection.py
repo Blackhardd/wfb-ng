@@ -12,8 +12,8 @@ import subprocess
 from twisted.python import log
 from twisted.internet import task, reactor
 
-from ... import call_and_check_rc
-from ...conf import settings
+from . import call_and_check_rc
+from .conf import settings
 
 
 # ==================== НАСТРОЙКИ ====================

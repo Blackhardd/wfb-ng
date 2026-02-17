@@ -13,7 +13,7 @@ from twisted.python import log
 from twisted.internet import task
 from abc import ABC
 
-from ..data import format_channel_freq
+from .sich_connection import format_channel_freq
 
 class ConnectionState(ABC):
     _state_name: str = ""

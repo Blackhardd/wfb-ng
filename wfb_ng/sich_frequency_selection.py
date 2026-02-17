@@ -6,9 +6,9 @@ import time
 from twisted.python import log
 from twisted.internet import reactor, task, defer
 
-from ... import call_and_check_rc
-from ...conf import settings
-from ..core.data import (
+from . import call_and_check_rc
+from .conf import settings
+from .sich_connection import (
     Utils,
     MeasurementStats,
     ChannelMeasurements,
