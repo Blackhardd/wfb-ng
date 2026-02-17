@@ -141,7 +141,7 @@ class MavlinkARMProtocol(object):
     def __init__(self, call_on_arm, call_on_disarm, status_manager=None):
         self.call_on_arm = call_on_arm
         self.call_on_disarm = call_on_disarm
-        self.status_manager = status_manager  # StatusManager для отслеживания статуса
+        self.status_manager = status_manager  # StatusManager на GS
         self.armed = None
         self.locked = False
         self.mavlink_fsm = mavlink_parser_gen(parse_l2=True)
@@ -154,32 +154,28 @@ class MavlinkARMProtocol(object):
     def messageReceived(self, l2_headers, message):
         seq, sys_id, comp_id, msg_id = l2_headers
 
-        # Sander 24.01.2026: Логирование всех команд от GCS и моментальная реакция на ARM/DISARM
+        # Логирование команд от GCS и моментальная реакция на ARM/DISARM (остальные только прокидываются)
         if msg_id in (MAVLINK_MSG_ID_COMMAND_LONG, MAVLINK_MSG_ID_COMMAND_INT):
             try:
                 msgname, fmap = unpack_mavlink(msg_id, message)
                 cmd_id = fmap.get('command')
-                cmd_name = "UNKNOWN"
-                try:
-                    cmd_name = enums['MAV_CMD'][cmd_id].name
-                except (KeyError, AttributeError):
-                    cmd_name = f"CMD#{cmd_id}"
-                
-                log.msg(f'Alarm! MavlinkARMProtocol, command: [sys:{sys_id} comp:{comp_id}]: {cmd_name} ({cmd_id})')
-                
+                # В лог только обрабатываемая команда ARM/DISARM (400)
+                if cmd_id == 400:  # MAV_CMD_COMPONENT_ARM_DISARM
+                    log.msg(f'MAVLINK команда от GCS: [sys:{sys_id} comp:{comp_id}]: MAV_CMD_COMPONENT_ARM_DISARM (400)')
+
                 # Моментальная реакция на команду arm/disarm (не дожидаясь heartbeat от дрона)
                 if cmd_id == 400: # MAV_CMD_COMPONENT_ARM_DISARM
                     param1 = fmap.get('param1')
                     if param1 == 1.0:
-                        log.msg("Atention: MavlinkARMProtocol, command - мгновенная команда ARM")
+                        log.msg("Увага: MavlinkARMProtocol, команда - мгновенная команда ARM")
                         if self.status_manager:
                             self.status_manager.on_arm_command()
                     elif param1 == 0.0:
-                        log.msg("Atention: MavlinkARMProtocol, command - мгновенная команда DISARM")
+                        log.msg("Увага: MavlinkARMProtocol, команда - мгновенная команда DISARM")
                         if self.status_manager:
                             self.status_manager.on_disarm_command()
             except Exception as e:
-                log.msg(f"Error: MavlinkARMProtocol, parsing command: {e}")
+                log.msg(f"Ошибка: MavlinkARMProtocol, parsing command: {e}")
 
         if (sys_id, comp_id, msg_id) != (1, 1, MAVLINK_MSG_ID_HEARTBEAT):
             return
@@ -203,13 +199,13 @@ class MavlinkARMProtocol(object):
         cmd = None
 
         if armed:
-            log.msg('Atention: MavlinkARMProtocol, command - State change: ARMED')
+            log.msg('Увага: MavARMProtocol, команда - State change: ARMED')
             cmd = self.call_on_arm
             # StatusManager - о команде arm
             if self.status_manager:
                 self.status_manager.on_arm_command()
         else:
-            log.msg('Atention: MavlinkARMProtocol, command - State change: DISARMED')
+            log.msg('Увага: MavlARMProtocol, команда - State change: DISARMED')
             cmd = self.call_on_disarm
             # StatusManager - о команде disarm
             if self.status_manager:
@@ -231,7 +227,7 @@ class MavlinkARMProtocol(object):
 @implementer(interfaces.IPushProducer)
 class MavlinkTCPProtocol(Protocol):
     def connectionMade(self):
-        log.msg('New connection from %s' % (self.transport.getPeer(),))
+        log.msg('Новое соединение от %s' % (self.transport.getPeer(),))
         self.mavlink_fsm = mavlink_parser_gen()
         self.mavlink_fsm.send(None)
         self.factory.sessions.append(self)
@@ -245,7 +241,7 @@ class MavlinkTCPProtocol(Protocol):
             self.factory.messageReceived(m)
 
     def connectionLost(self, reason):
-        log.msg('Connection closed %s' % (self.transport.getPeer(),))
+        log.msg('Соединение закрыто %s' % (self.transport.getPeer(),))
         self.transport.unregisterProducer()
         self.factory.sessions.remove(self)
         self.mavlink_fsm.close()
@@ -257,11 +253,11 @@ class MavlinkTCPProtocol(Protocol):
 
     def pauseProducing(self):
         self.paused = True
-        log.msg('Pause mavlink stream to %s' % (self.transport.getPeer(),))
+        log.msg('Приостановка mavlink stream к %s' % (self.transport.getPeer(),))
 
     def resumeProducing(self):
         self.paused = False
-        log.msg('Resume mavlink stream to %s' % (self.transport.getPeer(),))
+        log.msg('Возобновление mavlink stream к %s' % (self.transport.getPeer(),))
 
     def stopProducing(self):
         self.paused = True

@@ -125,6 +125,7 @@ def init_wlans(max_bw, wlans):
                 yield call_and_check_rc('iw', 'dev', wlan, 'set', 'freq', str(channel), ht_mode)
             else:
                 yield call_and_check_rc('iw', 'dev', wlan, 'set', 'channel', str(channel), ht_mode)
+            log.msg('Starting on wifi_channel %s (rendezvous/recovery). Must match on both GS and Drone.' % (channel,))
 
             txpower = settings.common.wifi_txpower
 
@@ -281,7 +282,8 @@ def init(profiles, wlans, cluster_mode):
                             srv_cfg.udp_peers_auto if is_cluster else wlans,
                             link_id, ant_sel_f, is_cluster, rx_only_wlan_ids]
             
-            if service_type == 'mavlink' and hasattr(manager, 'status_manager') and manager.status_manager:
+            # Передаём manager в mavlink только если у него есть status_manager (без power_manager)
+            if service_type == 'mavlink' and manager and hasattr(manager, 'status_manager') and manager.status_manager:
                 service_args.append(manager)
                 
             dl.append(defer.maybeDeferred(type_map[service_type], *service_args))
