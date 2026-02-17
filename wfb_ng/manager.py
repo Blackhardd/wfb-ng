@@ -9,6 +9,10 @@ from .sich_frequency_selection import FrequencySelection
 from .sich_power_selection import PowerSelection, GSPowerController
 from .sich_status_manager import StatusManager
 from .sich_connection import ConnectionMetricsManager, DataHandler
+from .sich_heartbeat import (
+    build_heartbeat_response,
+    HeartbeatSender,
+)
 from .conf import settings
 
 
@@ -58,7 +62,7 @@ class ManagerJSONClient(protocol.Protocol):
             msg = json.loads(self._buffer.decode())
             self._buffer = b""
             # На дроне: команды от GS могут приходить по этому же соединению (входящее для GS = исходящее для дрона)
-            if self.manager.get_type() == "drone" and msg.get("command") in ("init", "freq_sel_hop", "tx_power", "update_config", "set_status"):
+            if self.manager.get_type() == "drone" and msg.get("command") in ("init", "freq_sel_hop", "tx_power", "update_config", "set_status", "heartbeat"):
                 response = self.manager.process_command_message(msg)
                 self.transport.write(json.dumps(response).encode())
                 return
@@ -233,6 +237,9 @@ class Manager:
         # 4. Компонент менеджера - управление статусами устройств
         self.status_manager = None
 
+        # Таймстамп первого подключения (для вычисления uptime)
+        self._first_connect_ts = None
+
         # 5. Компонент менеджера - инициируем "пайплайн"
         self._setup_data_pipeline()
 
@@ -311,6 +318,8 @@ class Manager:
                 self.status_manager._transition_to(status)
                 log.msg("[Drone] Статус синхронизирован с ГС: %s" % status)
             return response
+        if command == "heartbeat":
+            return build_heartbeat_response(self, message)
         elif command == "update_config":
             self.update_config(message.get("settings"))
         elif command == "tx_power":
@@ -323,8 +332,21 @@ class Manager:
                 response["error"] = "tx_power not available or invalid action"
         return response
 
+    def _mark_first_connect(self):
+        """Записать таймстамп первого подключения (для uptime)."""
+        if self._first_connect_ts is None:
+            self._first_connect_ts = time.time()
+            log.msg("[Manager] First connect ts=%.2f (uptime starts)" % self._first_connect_ts)
+
+    def get_connection_uptime_sec(self) -> float | None:
+        """Сколько секунд устройство в подключённом состоянии. None если ещё не подключались."""
+        if self._first_connect_ts is None:
+            return None
+        return time.time() - self._first_connect_ts
+
     def on_connected(self):
         """При установлении TCP с GS — выходим из waiting в connected (синхрон с GS после init)."""
+        self._mark_first_connect()
         log.msg("Management connection established")
         if getattr(self, "status_manager", None) and self.status_manager.get_status() == "waiting":
             self.status_manager._transition_to("connected")
@@ -385,6 +407,10 @@ class GSManager(Manager):
         # Контроллер мощности: GS по своему RSSI отправляет команды дрону (increase/decrease)
         self.power_controller = GSPowerController(self)
         reactor.callWhenRunning(self.power_controller.start)
+
+        # Heartbeat: двунаправленный обмен метриками и статусом приёма (rx_from_drone / rx_from_gs)
+        self.heartbeat_sender = HeartbeatSender(self)
+        reactor.callWhenRunning(self.heartbeat_sender.start)
 
         self._incoming_server_protocol = None
         self._last_init_attempt = 0.0
@@ -528,6 +554,8 @@ class GSManager(Manager):
             self._init_retry_task.stop()
         if hasattr(self, 'power_controller') and self.power_controller:
             self.power_controller.stop()
+        if hasattr(self, 'heartbeat_sender') and self.heartbeat_sender:
+            self.heartbeat_sender.stop()
         super()._cleanup()
 
 # Менеджер что запускается на дроне
