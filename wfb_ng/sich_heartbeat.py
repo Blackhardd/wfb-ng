@@ -19,25 +19,55 @@ def _val(value):
     return value if value is not None else "n/a"
 
 
+def _status(manager):
+    status_manager = _status_manager(manager)
+    return _val(status_manager.get_status() if status_manager else None)
+
+
+def _parse(data):
+    try:
+        return json.loads(data.decode())
+    except Exception:
+        return None
+
+
+def _encode(data):
+    return json.dumps(data).encode()
+
+
+def _attr(manager, name, default=None):
+    return getattr(manager, name, default)
+
+
+def _metrics_manager(manager):
+    return _attr(manager, "metrics_manager")
+
+
+def _status_manager(manager):
+    return _attr(manager, "status_manager")
+
+
+def _current_channel(manager):
+    frequency_selection = _attr(manager, "frequency_selection")
+    channels = _attr(frequency_selection, "channels") if frequency_selection else None
+    return channels.current if channels else None
+
+
 def _local(manager):
-    metrics_manager = getattr(manager, "metrics_manager", None)
-    rssi, per, snr = None, None, None
+    metrics_manager = _metrics_manager(manager)
+    rssi, per, snr = None, None, None # возвращаю сразу еперный театр 3 пустых коробки, спасибо pip8 за это
     if metrics_manager:
         metrics = metrics_manager.get_metrics()
         if metrics:
             rssi = metrics.get("rssi")
             per = metrics.get("per")
             snr = metrics.get("snr")
-    channels = getattr(getattr(manager, "frequency_selection", None), "channels", None)
-    current_channel = channels.current if channels else None
-    channel_freq = current_channel.freq if current_channel else None
     snr_rounded = round(snr, 1) if snr is not None else "n/a"
-    return {"rssi": _val(rssi), "per": _val(per), "snr": snr_rounded, "channel": _val(channel_freq)}
+    return {"rssi": _val(rssi), "per": _val(per), "snr": snr_rounded}
 
 
 def _score(manager):
-    channels = getattr(getattr(manager, "frequency_selection", None), "channels", None)
-    current_channel = channels.current if channels else None
+    current_channel = _current_channel(manager)
     if current_channel is None:
         return "n/a"
     return round(current_channel.score, 2)
@@ -45,28 +75,28 @@ def _score(manager):
 
 def _remote_from_peer(peer_message):
     if not peer_message or not isinstance(peer_message, dict):
-        return None
+        return None # возвращаю пустую коробку, что бы не было ошибки
     if peer_message.get("type") != "heartbeat":
-        return None
+        return None # возвращаю пустую коробку, что бы не было ошибки
     peer_local = peer_message.get("local") or {}
-    return {
+    remote = {
         "timestamp": _val(peer_message.get("timestamp")),
         "status": _val(peer_message.get("status")),
         "rssi": _val(peer_local.get("rssi")),
         "per": _val(peer_local.get("per")),
         "snr": _val(peer_local.get("snr")),
-        "channel": _val(peer_local.get("channel")),
         "score": _val(peer_message.get("score")),
     }
+    return remote
 
 
-# --- ГС (downlink) ---
+# --- ГС ---
 
 class HeartbeatGS(DatagramProtocol):
     def __init__(self, manager):
         self.manager = manager
-        self._last_from_drone = None
-        self._tick_loop = None
+        self._last_from_drone = None # по умолчанию пустая коробка где нет данных
+        self._tick_loop = None # по умолчанию пустая коробка где нет данных
 
     def startProtocol(self):
         self._tick_loop = task.LoopingCall(self._tick)
@@ -78,32 +108,27 @@ class HeartbeatGS(DatagramProtocol):
             self._tick_loop.stop()
 
     def _tick(self):
-        if not self.manager.is_connected():
-            return
-        status_manager = getattr(self.manager, "status_manager", None)
-        status = _val(status_manager.get_status() if status_manager else None)
-        payload = {
+        data = {
             "type": "heartbeat",
             "timestamp": time.time(),
-            "status": status,
+            "status": _status(self.manager),
             "local": _local(self.manager),
             "remote": _remote_from_peer(self._last_from_drone),
             "score": _val(_score(self.manager)),
         }
         try:
-            self.transport.write(json.dumps(payload).encode(), (DRONE_IP, HEARTBEAT_DRONE_PORT))
+            self.transport.write(_encode(data), (DRONE_IP, HEARTBEAT_DRONE_PORT))
         except Exception as error:
             log.msg("[Heartbeat] send: %s" % error)
 
     def datagramReceived(self, data, addr):
-        try:
-            message = json.loads(data.decode())
-        except Exception:
+        message = _parse(data)
+        if message is None:
             return
         self._last_from_drone = message
         remote_local = message.get("local") or {}
         log.msg("[HBeat] GS <- Drone: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"), remote_local.get("snr")))
-        callback = getattr(self.manager, "heartbeat_callback", None)
+        callback = _attr(self.manager, "heartbeat_callback")
         if callback:
             try:
                 callback(message)
@@ -111,13 +136,13 @@ class HeartbeatGS(DatagramProtocol):
                 log.msg("[Heartbeat] callback: %s" % error)
 
 
-# --- Дрон (uplink) ---
+# --- Дрон  ---
 
 class HeartbeatDrone(DatagramProtocol):
     def __init__(self, manager):
         self.manager = manager
-        self._last_from_gs = None
-        self._tick_loop = None
+        self._last_from_gs = None # пустая коробка
+        self._tick_loop = None # пустая коробка
 
     def startProtocol(self):
         self._tick_loop = task.LoopingCall(self._tick)
@@ -128,25 +153,22 @@ class HeartbeatDrone(DatagramProtocol):
             self._tick_loop.stop()
 
     def _tick(self):
-        status_manager = getattr(self.manager, "status_manager", None)
-        status = _val(status_manager.get_status() if status_manager else None)
-        payload = {
+        data = {
             "type": "heartbeat",
             "timestamp": time.time(),
-            "status": status,
+            "status": _status(self.manager),
             "local": _local(self.manager),
             "remote": _remote_from_peer(self._last_from_gs),
             "score": _val(_score(self.manager)),
         }
         try:
-            self.transport.write(json.dumps(payload).encode(), (GS_IP, HEARTBEAT_GS_PORT))
+            self.transport.write(_encode(data), (GS_IP, HEARTBEAT_GS_PORT))
         except Exception as error:
             log.msg("[Heartbeat] send: %s" % error)
 
     def datagramReceived(self, data, addr):
-        try:
-            message = json.loads(data.decode())
-        except Exception:
+        message = _parse(data)
+        if message is None:
             return
         self._last_from_gs = message
         remote_local = message.get("local") or {}
