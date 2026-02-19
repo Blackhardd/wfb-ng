@@ -9,10 +9,7 @@ from .sich_frequency_selection import FrequencySelection
 from .sich_power_selection import PowerSelection, GSPowerController
 from .sich_status_manager import StatusManager
 from .sich_connection import ConnectionMetricsManager, DataHandler
-from .sich_heartbeat import (
-    build_heartbeat_response,
-    HeartbeatSender,
-)
+from .sich_heartbeat import HeartbeatGS, HeartbeatDrone, HEARTBEAT_GS_PORT, HEARTBEAT_DRONE_PORT
 from .conf import settings
 
 
@@ -61,8 +58,8 @@ class ManagerJSONClient(protocol.Protocol):
         try:
             msg = json.loads(self._buffer.decode())
             self._buffer = b""
-            # На дроне: команды от GS могут приходить по этому же соединению (входящее для GS = исходящее для дрона)
-            if self.manager.get_type() == "drone" and msg.get("command") in ("init", "freq_sel_hop", "tx_power", "update_config", "set_status", "heartbeat"):
+            # На дроне: команды от GS могут приходить по этому же соединению. heartbeat — по UDP.
+            if self.manager.get_type() == "drone" and msg.get("command") in ("init", "freq_sel_hop", "tx_power", "update_config", "set_status"):
                 response = self.manager.process_command_message(msg)
                 self.transport.write(json.dumps(response).encode())
                 return
@@ -318,9 +315,7 @@ class Manager:
                 self.status_manager._transition_to(status)
                 log.msg("[Drone] Статус синхронизирован с ГС: %s" % status)
             return response
-        if command == "heartbeat":
-            return build_heartbeat_response(self, message)
-        elif command == "update_config":
+        if command == "update_config":
             self.update_config(message.get("settings"))
         elif command == "tx_power":
             action = message.get("action")
@@ -408,9 +403,8 @@ class GSManager(Manager):
         self.power_controller = GSPowerController(self)
         reactor.callWhenRunning(self.power_controller.start)
 
-        # Heartbeat: двунаправленный обмен метриками и статусом приёма (rx_from_drone / rx_from_gs)
-        self.heartbeat_sender = HeartbeatSender(self)
-        reactor.callWhenRunning(self.heartbeat_sender.start)
+        # Heartbeat по UDP
+        self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_GS_PORT, HeartbeatGS(self))
 
         self._incoming_server_protocol = None
         self._last_init_attempt = 0.0
@@ -549,13 +543,13 @@ class GSManager(Manager):
     def update_config(self, data):
         super().update_config(data)
 
-    def _cleanup(self):
+    def _cleanup(self): # очищаю при остановке сервера и дрона
         if getattr(self, "_init_retry_task", None) and self._init_retry_task.running:
             self._init_retry_task.stop()
         if hasattr(self, 'power_controller') and self.power_controller:
             self.power_controller.stop()
-        if hasattr(self, 'heartbeat_sender') and self.heartbeat_sender:
-            self.heartbeat_sender.stop()
+        if hasattr(self, '_heartbeat_udp') and self._heartbeat_udp:
+            self._heartbeat_udp.stopListening()
         super()._cleanup()
 
 # Менеджер что запускается на дроне
@@ -581,6 +575,9 @@ class DroneManager(Manager):
         self.server_f = ManagerJSONServerFactory(self)
         reactor.listenTCP(14888, self.server_f)
 
+        # Heartbeat по UDP
+        self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_DRONE_PORT, HeartbeatDrone(self))
+
     def on_status_changed(self, old_status, new_status):
         """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS."""
         if not self.status_manager:
@@ -597,6 +594,8 @@ class DroneManager(Manager):
     def _cleanup(self):
         if hasattr(self, 'power_selection') and self.power_selection:
             self.power_selection.stop()
+        if hasattr(self, '_heartbeat_udp') and self._heartbeat_udp:
+            self._heartbeat_udp.stopListening()
         super()._cleanup()
 
 
