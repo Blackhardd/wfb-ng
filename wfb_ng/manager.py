@@ -371,6 +371,7 @@ class Manager:
 
     def update_config(self, data): # обновляем cfg по секциям
         from .conf import wfb_ng_cfg, station_settings
+        from .sich_startup_log import log_startup
 
         for section_name, section_data in data.items():
             if not station_settings.has_section(section_name):
@@ -382,6 +383,7 @@ class Manager:
                 section.set(name, value)
 
         station_settings.save_to_file(wfb_ng_cfg)
+        log_startup("Config saved to %s" % wfb_ng_cfg)
     
     def _cleanup(self):
         """
