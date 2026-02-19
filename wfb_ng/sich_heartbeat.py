@@ -8,9 +8,14 @@ from twisted.python import log
 from twisted.internet import task
 from twisted.internet.protocol import DatagramProtocol
 
+from .sich_connection import format_channel_freq
+
 HEARTBEAT_INTERVAL_SEC = 1.0
 HEARTBEAT_GS_PORT = 14890
 HEARTBEAT_DRONE_PORT = 14891
+# Два порта для sich-cli: по порту видно, получили мы или отправили
+HEARTBEAT_STATS_PORT_RECEIVED = 14892  # сюда пересылаем то, что получили от пира
+HEARTBEAT_STATS_PORT_SENT = 14893      # сюда пересылаем то, что отправили пиру
 GS_IP = "10.5.0.1"
 DRONE_IP = "10.5.0.2"
 
@@ -53,6 +58,14 @@ def _current_channel(manager):
     return channels.current if channels else None
 
 
+def _channel_for_heartbeat(manager):
+    """Строка канала для heartbeat (частота), либо 'n/a'."""
+    ch = _current_channel(manager)
+    if ch is None:
+        return "n/a"
+    return format_channel_freq(ch.freq)
+
+
 def _local(manager):
     metrics_manager = _metrics_manager(manager)
     rssi, per, snr = None, None, None # возвращаю сразу еперный театр 3 пустых коробки, спасибо pip8 за это
@@ -63,7 +76,7 @@ def _local(manager):
             per = metrics.get("per")
             snr = metrics.get("snr")
     snr_rounded = round(snr, 1) if snr is not None else "n/a"
-    return {"rssi": _val(rssi), "per": _val(per), "snr": snr_rounded}
+    return {"timestamp": time.time(), "rssi": _val(rssi), "per": _val(per), "snr": snr_rounded}
 
 
 def _score(manager):
@@ -82,6 +95,7 @@ def _remote_from_peer(peer_message):
     remote = {
         "timestamp": _val(peer_message.get("timestamp")),
         "status": _val(peer_message.get("status")),
+        "channel": _val(peer_message.get("channel")),
         "rssi": _val(peer_local.get("rssi")),
         "per": _val(peer_local.get("per")),
         "snr": _val(peer_local.get("snr")),
@@ -112,12 +126,15 @@ class HeartbeatGS(DatagramProtocol):
             "type": "heartbeat",
             "timestamp": time.time(),
             "status": _status(self.manager),
+            "channel": _channel_for_heartbeat(self.manager),
             "local": _local(self.manager),
             "remote": _remote_from_peer(self._last_from_drone),
             "score": _val(_score(self.manager)),
         }
         try:
-            self.transport.write(_encode(data), (DRONE_IP, HEARTBEAT_DRONE_PORT))
+            payload = _encode(data)
+            self.transport.write(payload, (DRONE_IP, HEARTBEAT_DRONE_PORT))
+            self.transport.write(payload, ("127.0.0.1", HEARTBEAT_STATS_PORT_SENT))
         except Exception as error:
             log.msg("[Heartbeat] send: %s" % error)
 
@@ -128,6 +145,10 @@ class HeartbeatGS(DatagramProtocol):
         self._last_from_drone = message
         remote_local = message.get("local") or {}
         log.msg("[HBeat] GS <- Drone: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"), remote_local.get("snr")))
+        try:
+            self.transport.write(data, ("127.0.0.1", HEARTBEAT_STATS_PORT_RECEIVED))
+        except Exception:
+            pass
         callback = _attr(self.manager, "heartbeat_callback")
         if callback:
             try:
@@ -157,12 +178,15 @@ class HeartbeatDrone(DatagramProtocol):
             "type": "heartbeat",
             "timestamp": time.time(),
             "status": _status(self.manager),
+            "channel": _channel_for_heartbeat(self.manager),
             "local": _local(self.manager),
             "remote": _remote_from_peer(self._last_from_gs),
             "score": _val(_score(self.manager)),
         }
         try:
-            self.transport.write(_encode(data), (GS_IP, HEARTBEAT_GS_PORT))
+            payload = _encode(data)
+            self.transport.write(payload, (GS_IP, HEARTBEAT_GS_PORT))
+            self.transport.write(payload, ("127.0.0.1", HEARTBEAT_STATS_PORT_SENT))
         except Exception as error:
             log.msg("[Heartbeat] send: %s" % error)
 
@@ -173,3 +197,7 @@ class HeartbeatDrone(DatagramProtocol):
         self._last_from_gs = message
         remote_local = message.get("local") or {}
         log.msg("[HBeat] Drone <- GS: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"), remote_local.get("snr")))
+        try:
+            self.transport.write(data, ("127.0.0.1", HEARTBEAT_STATS_PORT_RECEIVED))
+        except Exception:
+            pass

@@ -424,7 +424,7 @@ class GSManager(Manager):
 
         self._incoming_server_protocol = None
         self._last_init_attempt = 0.0
-        self._init_timeout_sec = 8
+        self._init_timeout_sec = 8 
         self._init_retry_interval = 3.0
         self._init_retry_task = task.LoopingCall(self._periodic_init_retry)
         self._init_retry_task.start(self._init_retry_interval)
@@ -447,7 +447,7 @@ class GSManager(Manager):
 
     def _try_init_over_incoming(self):
         """Попытаться отправить init по входящему соединению (fallback при перезагрузке дрона)."""
-        if self._is_connected:
+        if self._is_connected: 
             return
         if not self._incoming_server_protocol or not self._incoming_server_protocol.transport:
             return

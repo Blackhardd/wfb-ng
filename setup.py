@@ -49,7 +49,7 @@ setup(
                                       'wfb-log-parser=wfb_ng.log_parser:main']},
     package_data={'wfb_ng.conf': ['master.cfg', 'site.cfg']},
     data_files = [('/usr/bin', ['wfb_tx', 'wfb_rx', 'wfb_keygen', 'wfb_tx_cmd', 'wfb_rtsp',
-                                'scripts/wfb-cli-x11', 'scripts/wfb-nics',
+                                'scripts/wfb-cli-x11', 'scripts/wfb-nics', 'scripts/sich-cli',
                                 'scripts/bind/init_gs.sh', 'scripts/bind/init_drone.sh',
                                 'scripts/bind/wfb_bind_client.sh', 'scripts/bind/wfb_bind_server.sh']),
                   ('/lib/systemd/system', ['scripts/systemd/wifibroadcast.service',
