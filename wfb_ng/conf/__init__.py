@@ -15,4 +15,4 @@ def _parse_config(wfb_ng_cfg=None):
 
 
 settings, cfg_files = _parse_config()
-user_settings, user_cfg_files = config_parser.parse_config("/", [wfb_ng_cfg])
+station_settings, station_cfg_files = config_parser.parse_config("/", [wfb_ng_cfg])

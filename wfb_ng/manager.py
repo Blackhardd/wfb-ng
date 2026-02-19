@@ -10,6 +10,9 @@ from .sich_power_selection import PowerSelection, GSPowerController
 from .sich_status_manager import StatusManager
 from .sich_connection import ConnectionMetricsManager, DataHandler
 from .sich_heartbeat import HeartbeatGS, HeartbeatDrone, HEARTBEAT_GS_PORT, HEARTBEAT_DRONE_PORT
+# добавил импорт 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+# Todo: не забыть добавить чутка позже в цфг время и дату обновления конфинга
+from .sich_sync_cfg import get_config_hash, get_config_as_dict, SyncCfgOnConnect
 from .conf import settings
 
 
@@ -293,6 +296,10 @@ class Manager:
         Обработка входящей команды от пира. Возвращает dict-ответ для отправки.
         Используется на сервере (оба стороны) и на клиенте дрона при приёме команд от GS по входящему соединению.
         """
+# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+        if message.get("request"):
+            return self._handle_request_from_peer(message)
+# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
         response = {"status": "success"}
         command = message.get("command")
         if command == "init":
@@ -327,6 +334,13 @@ class Manager:
                 response["error"] = "tx_power not available or invalid action"
         return response
 
+# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+# Эта функция нужна для обработки запросов между дроном и ГС.
+# Например, если дрон отправит запрос на обновление конфига ГС.
+    def _handle_request_from_peer(self, message):
+        """Запрос от пира (например дрон -> ГС). По умолчанию не поддерживается."""
+        return {"status": "error", "error": "unsupported"}
+
     def _mark_first_connect(self):
         """Записать таймстамп первого подключения (для uptime)."""
         if self._first_connect_ts is None:
@@ -356,18 +370,18 @@ class Manager:
         pass
 
     def update_config(self, data): # обновляем cfg по секциям
-        from .conf import wfb_ng_cfg, user_settings
+        from .conf import wfb_ng_cfg, station_settings
 
         for section_name, section_data in data.items():
-            if not user_settings.has_section(section_name):
-                user_settings.add_section(section_name)
+            if not station_settings.has_section(section_name):
+                station_settings.add_section(section_name)
 
-            section = user_settings.get_section(section_name)
+            section = station_settings.get_section(section_name)
 
             for name, value in section_data.items():
                 section.set(name, value)
 
-        user_settings.save_to_file(wfb_ng_cfg)
+        station_settings.save_to_file(wfb_ng_cfg)
     
     def _cleanup(self):
         """
@@ -412,6 +426,17 @@ class GSManager(Manager):
         self._init_retry_interval = 3.0
         self._init_retry_task = task.LoopingCall(self._periodic_init_retry)
         self._init_retry_task.start(self._init_retry_interval)
+
+# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+    def _handle_request_from_peer(self, message):
+        """Обработка запросов от дрона (get_config_hash, get_config)."""
+        req = message.get("request")
+        if req == "get_config_hash":
+            return {"status": "ok", "config_hash": get_config_hash()}
+        if req == "get_config":
+            return {"status": "ok", "config": get_config_as_dict()}
+        return super()._handle_request_from_peer(message)
+# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
 
     def on_incoming_server_connection(self, server_protocol):
         """Вызывается при входящем соединении от дрона. Используем для init, если клиент ещё не готов."""
@@ -578,8 +603,13 @@ class DroneManager(Manager):
         # Heartbeat по UDP
         self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_DRONE_PORT, HeartbeatDrone(self))
 
+        # 18.02.22026 Синхронизация конфига при первом переходе в connected (после ребута b не при lost->recovery->connected)
+        self.sync_cfg = SyncCfgOnConnect()
+
     def on_status_changed(self, old_status, new_status):
         """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS."""
+        if new_status == "connected":
+            self.sync_cfg.on_entered_connected(self)
         if not self.status_manager:
             return
         if new_status == self.status_manager.STATUS_ARMED:
