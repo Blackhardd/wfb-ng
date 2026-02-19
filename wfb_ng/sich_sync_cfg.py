@@ -7,6 +7,7 @@ import json
 from twisted.python import log
 
 from .conf import station_settings
+from .sich_startup_log import log_startup
 
 
 # добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
@@ -20,10 +21,12 @@ def _settings_to_dict(station_settings_obj):
             continue  # если это служебная секция или нет дикта , то пропускаем
         out[section_name] = {}  # создаю пустую коробку для секции с которой буду работать
         for property_name, property_value in section_obj.__dict__.items(): # проверяю по очереди все параметры секции
-            if isinstance(property_value, (str, int, float, bool, type(None))): #встроенной питоновской функцией проверяю значения т.е они стандартные типы или нет
-                out[section_name][property_name] = property_value #после проверки - добавляю в "коробку" т.е дикт out
+            if isinstance(property_value, (str, int, float, bool, type(None), list, tuple)):  # list/tuple — передаём как есть (JSON-массивы)
+                out[section_name][property_name] = property_value
+            elif isinstance(property_value, dict):
+                out[section_name][property_name] = dict(property_value)  # dict — передаём как есть
             else:
-                out[section_name][property_name] = str(property_value) # если не стандартный тип, то приводим к строке
+                out[section_name][property_name] = str(property_value)  # fallback: остальное — в строку
     return out
 
 
@@ -53,7 +56,7 @@ class SyncCfgOnConnect:
         self._is_start = None # пустая коробка же, жду булевое значение после первого конекта
 
     def on_entered_connected(self, manager): # вызываю при переходе в статус connected
-        if self._is_start is not None: # если фалг не отсуствует, то пропускаем
+        if self._is_start is not None: # если флаг не отсутствует, то пропускаем
             return
         if manager.get_type() != "drone": # проверяю тип устройство, дрон или не дрон
             return 
@@ -63,6 +66,7 @@ class SyncCfgOnConnect:
         # отправляю запрос на получение хеша конфига с ГС, получаю Deferred (обещание получить ответ асинхронно)
         hash_deferred = client_f.send_command({"request": "get_config_hash"}) # тут я отправляю запрос на получение хеша с ГС
         if hash_deferred is None: # если нет хеша то пропускаем синхронизацию,т.е что бы не было ошибки
+            log_startup("[SyncCfg] Connection not ready, skip sync this time")
             log.msg("[SyncCfg] Connection not ready, skip sync this time")
             return
         hash_deferred.addCallback(self._on_hash_response, manager) # добавляю callback для получения ответа от ГС
@@ -70,16 +74,20 @@ class SyncCfgOnConnect:
 
     def _on_hash_response(self, response, manager): # вызываю при получении ответа от ГС по сути
         if response.get("status") != "ok": # у нас в скриптах этот статус ок, я не стал изменять условный подход, оставил как есть 
+            log_startup("[SyncCfg] get_config_hash failed: %s" % response)
             log.msg("[SyncCfg] get_config_hash failed: %s" % response)
             self._is_start = True # тут я устанавливаю флаг в True что бы не было ошибки
             return
         gs_hash = response.get("config_hash")
-        local_hash = get_config_hash() # получаю хеш конфига с ГС
+        local_hash = get_config_hash() # получаю локальный хеш конфига (дрона); хеш ГС уже в gs_hash из response
         if gs_hash == local_hash: # если хеши совпадают, то пропускаем синхронизацию!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            log_startup("[SyncCfg] Config hash match, no sync needed")
             log.msg("[SyncCfg] Config hash match, no sync needed")
-            self._is_start = True # тут я устанавливаю флаг втру ч
+            self._is_start = True # тут я устанавливаю флаг в True
             return
-        log.msg("[SyncCfg] Config hash mismatch (local=%s, gs=%s), requesting full config" % (local_hash[:8], (gs_hash or "")[:8]))
+        msg_mismatch = "[SyncCfg] Config hash mismatch (local=%s, gs=%s), requesting full config" % (local_hash[:8], (gs_hash or "")[:8])
+        log_startup(msg_mismatch)
+        log.msg(msg_mismatch)
         # Deferred, который мы получаем при отправке команды на запрос конфига у ГС, меняем название на config_request_deferred чтобы было понятно
         config_request_deferred = manager.client_f.send_command({"request": "get_config"})
         if config_request_deferred is None: # если нет конфига то пропускаем синхронизацию,т.е что бы не было ошибки
@@ -90,21 +98,26 @@ class SyncCfgOnConnect:
 
     def _on_config_response(self, response, manager): # вызываю при получении ответа от ГС по сути
         if response.get("status") != "ok": # у нас в скриптах этот статус ок, я не стал изменять условный подход, оставил как есть 
+            log_startup("[SyncCfg] get_config failed: %s" % response)
             log.msg("[SyncCfg] get_config failed: %s" % response)
             self._is_start = True # тут я устанавливаю флаг в True что бы не было ошибки
             return
         config = response.get("config")
         if not config or not isinstance(config, dict): # если нет конфига или нет дикта, то пропускаем синхронизацию,т.е что бы не было ошибки
+            log_startup("[SyncCfg] Invalid config in response")
             log.msg("[SyncCfg] Invalid config in response")
             self._is_start = True # тут я устанавливаю флаг в True что бы не было ошибки
             return
         try:
             manager.update_config(config) # обновляю конфиг на дроне
+            log_startup("[SyncCfg] Config synced from GS")
             log.msg("[SyncCfg] Config synced from GS")
-        except Exception as e:
-            log.msg("[SyncCfg] update_config error: %s" % e)
+        except Exception as err:
+            log_startup("[SyncCfg] update_config error: %s" % err)
+            log.msg("[SyncCfg] update_config error: %s" % err)
         self._is_start = True # тут я устанавливаю флаг в True что бы не было ошибки
 
     def _on_sync_error(self, err):
+        log_startup("[SyncCfg] Sync error: %s" % err)
         log.msg("[SyncCfg] Sync error: %s" % err) # вызываю при ошибке синхронизации
         self._is_start = True

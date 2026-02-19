@@ -37,6 +37,7 @@ from .protocols import AntStatsAndSelector, RFTempMeter, SSHClientProtocol, MsgP
 from .services import parse_services, init_udp_direct_tx, init_udp_direct_rx, init_mavlink, init_tunnel, init_udp_proxy, hash_link_domain, bandwidth_map
 from .cluster import parse_cluster_services, gen_cluster_scripts
 from .manager import ManagerFactory
+from .sich_startup_log import init_startup_log
 from .conf import settings, cfg_files
 
 
@@ -233,6 +234,7 @@ def init(profiles, wlans, cluster_mode):
         log.msg('RX-only wlan ids: %s' % (', '.join(map(hex, rx_only_wlan_ids))))
 
     for profile, service_list in services:
+        init_startup_log(profile)
         # Domain wide antenna selector
         profile_cfg = getattr(settings, profile)
 
