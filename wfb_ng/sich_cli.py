@@ -181,11 +181,87 @@ PAD_LEFT = 2
 PAD_BETWEEN = 2
 PAD_RIGHT = 2
 
+# Максимум столбиков в графике PER (по ширине экрана подстроится)
+PER_CHART_MAX_BARS = 80
+# Высота одного графика в строках (вертикальные столбики)
+PER_CHART_HEIGHT = 5
+# Символ столбика (вертикальная заливка)
+_PER_BAR_FILL = "#"
 
-def _draw_table(stdscr, display):
+
+def _per_to_pct(per):
+    """Привести PER к процентам 0–100 (если пришло 0–1 — умножить на 100)."""
+    if per is None:
+        return None
+    try:
+        v = float(per)
+        if 0 <= v <= 1:
+            return v * 100.0
+        return max(0.0, min(100.0, v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _draw_per_chart(stdscr, per_history, inner_left, inner_width, y_start):
     """
-    Разметка - левая и правая колонки 50%/50%. Падинги задаются константами выше
+    Два графика с вертикальными столбиками (как на референсе): высота = PER 0–100%.
+    Верхний — GS, нижний — Drone. Каждый столбик = одно обновление, новое справа.
     """
+    label_w = 6  # "GS    " / "Drone "
+    scale_w = 5  # " 100%"
+    bar_area_w = max(0, inner_width - label_w - scale_w)
+    # Шкала 100% / 0% всегда в одном месте справа (не зависит от числа столбиков)
+    scale_x = inner_left + label_w + bar_area_w
+    max_bars = min(len(per_history) if per_history else 0, bar_area_w, PER_CHART_MAX_BARS)
+    h = PER_CHART_HEIGHT
+
+    def draw_one_chart(y_base, label, values):
+        # y_base — первая строка этого графика (сверху), рисуем h строк вниз
+        try:
+            stdscr.addstr(y_base, inner_left, label)
+            stdscr.addstr(y_base + 1, scale_x, "100%")
+            stdscr.addstr(y_base + h, scale_x, " 0%")
+        except curses.error:
+            pass
+        for col in range(max_bars):
+            pct = values[col] if col < len(values) else None
+            fill_count = round((pct or 0) / 100.0 * h) if pct is not None else 0
+            fill_count = max(0, min(h, fill_count))
+            x = inner_left + label_w + col
+            for r in range(h):
+                y = y_base + 1 + r
+                is_fill = r >= (h - fill_count)
+                try:
+                    ch = _PER_BAR_FILL if is_fill else " "
+                    stdscr.addstr(y, x, ch)
+                except curses.error:
+                    pass
+
+    if not per_history or max_bars <= 0:
+        try:
+            stdscr.addstr(y_start, inner_left, "PER (newest ->)")
+            draw_one_chart(y_start + 1, "GS    ", [])
+            draw_one_chart(y_start + 1 + h + 1, "Drone ", [])
+        except curses.error:
+            pass
+        return
+    recent = per_history[-max_bars:]
+    gs_vals = [p[0] for p in recent]
+    drone_vals = [p[1] for p in recent]
+    try:
+        stdscr.addstr(y_start, inner_left, "PER (newest ->)")
+        draw_one_chart(y_start + 1, "GS    ", gs_vals)
+        draw_one_chart(y_start + 1 + h + 1, "Drone ", drone_vals)
+    except curses.error:
+        pass
+
+
+def _draw_table(stdscr, display, per_history=None):
+    """
+    Разметка - левая и правая колонки 50%/50%. Падинги задаются константами выше.
+    Внизу — секция графика PER (2 строки: GS, Drone).
+    """
+    per_history = per_history or []
     try:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
@@ -199,9 +275,10 @@ def _draw_table(stdscr, display):
         left_width = max(0, mid - left_x - 1)   # минус 1 под "|"
         right_x = mid + 1
         right_width = max(0, inner_right - right_x - PAD_RIGHT + 1)
-        # y=0 margin, y=1 верхняя _ _ _, y=2.. контент, затем нижняя _ _ _, затем margin
+        # y=0 margin, y=1 верхняя _ _ _, y=2.. контент, футер, затем график PER (2 графика с вертикальными столбиками)
         content_y_start = 2
-        max_content_rows = max(0, h - 5)  # минус 1 строка под футер "Локальный таймстамп"
+        per_chart_lines = 1 + (1 + PER_CHART_HEIGHT) * 2  # заголовок + (подпись+высота)*2
+        max_content_rows = max(0, h - 3 - 1 - per_chart_lines)  # рамка, футер, график
 
         left_lines = display.left_column_lines()
         right_lines = display.right_column_lines()
@@ -247,6 +324,10 @@ def _draw_table(stdscr, display):
             except curses.error:
                 pass
 
+        # Секция графика PER: 2 графика с вертикальными столбиками (GS, Drone)
+        if footer_y + per_chart_lines < h:
+            _draw_per_chart(stdscr, per_history, inner_left, inner_width, footer_y + 1)
+
         stdscr.refresh()
     except curses.error:
         pass
@@ -279,12 +360,13 @@ def _run_hb(stdscr, once):
     last_sent = None
     last_received = None
     last_display = None
+    per_history = []  # список (gs_per_pct, drone_per_pct) — один столбик на обновление
     try:
         while True:
             ready, _, _ = select.select([sock_recv, sock_send], [], [], REFRESH_INTERVAL)
             if not ready:
                 if last_display is not None:
-                    _draw_table(stdscr, last_display)
+                    _draw_table(stdscr, last_display, per_history)
                 else:
                     try:
                         stdscr.erase()
@@ -301,11 +383,20 @@ def _run_hb(stdscr, once):
                     continue
                 if sock is sock_recv:
                     last_received = msg
+                    # Получили от дрона: GS = remote (что дрон видит у нас), Drone = local
+                    gs_pct = _per_to_pct(get_path(msg, "remote.per"))
+                    drone_pct = _per_to_pct(get_path(msg, "local.per"))
                 else:
                     last_sent = msg
+                    # Отправили дрону: GS = local, Drone = remote (ответ дрона)
+                    gs_pct = _per_to_pct(get_path(msg, "local.per"))
+                    drone_pct = _per_to_pct(get_path(msg, "remote.per"))
+                per_history.append((gs_pct, drone_pct))
+                if len(per_history) > PER_CHART_MAX_BARS:
+                    per_history.pop(0)
             display = build_display(last_sent, last_received)
             last_display = display
-            _draw_table(stdscr, display)
+            _draw_table(stdscr, display, per_history)
             if once:
                 break
     except KeyboardInterrupt:

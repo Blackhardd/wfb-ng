@@ -110,14 +110,22 @@ do_bind()
         fi
     fi
 
-    # Copy other files normally
-    for i in drone.key bind.yaml
+    # Ключи и bind.yaml: копируем в /etc/ с полной заменой существующих
+    for i in drone.key gs.key bind.yaml
     do
-        if [ -f $i ]
+        if [ -f "$i" ]
         then
-            cp $i /etc/
+            cp -f "$i" /etc/
         fi
     done
+
+    # Без drone.key дрон не сможет расшифровывать трафик с GS (tunnel rx: Unable to decrypt)
+    if [ ! -f /etc/drone.key ]
+    then
+        rm -r "$tmpdir"
+        echo $'ERR\tMissing drone.key in BIND payload (GS must have /etc/drone.key and /etc/gs.key)'
+        exit 0
+    fi
 
     rm -r "$tmpdir"
     echo "OK"
@@ -128,7 +136,7 @@ do_unbind()
     set -e
     trap report_err ERR
 
-    rm -f /etc/drone.key
+    rm -f /etc/drone.key /etc/gs.key
     echo "OK"
 }
 

@@ -7,13 +7,11 @@ _cleanup()
     systemctl start wifibroadcast@gs
 }
 
-if ! [ -f /etc/gs.key ]
-then
-    tmpdir=$(mktemp -d)
-    (cd $tmpdir && wfb_keygen)
-    mv $tmpdir/{gs,drone}.key /etc
-    rmdir $tmpdir
-fi
+# Перегенерируем ключи при каждом входе в бинд (даже если уже есть)
+tmpdir=$(mktemp -d)
+(cd "$tmpdir" && wfb_keygen)
+cp -f "$tmpdir"/gs.key "$tmpdir"/drone.key /etc/
+rm -r "$tmpdir"
 
 if ! [ -f /etc/bind.key ]
 then
