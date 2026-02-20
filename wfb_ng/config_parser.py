@@ -24,6 +24,7 @@ import copy
 import glob
 import os
 import json
+import re
 
 from twisted.python import log
 
@@ -68,7 +69,6 @@ class Settings(object):
                     items[key] = value
             if items:
                 config[section_name] = items
-            print(section_name, items)
         config.write(fp)
 
     def has_section(self, section_name):
@@ -79,13 +79,82 @@ class Settings(object):
 
     def get_section(self, section_name):
         return getattr(self, section_name)
-    
+
+    def _get_all_items(self):
+        """Возвращает dict: (section_name, key) -> value для всех настроек."""
+        items = {}
+        for section_name, section_obj in self.__dict__.items():
+            if section_name == "path" or not hasattr(section_obj, "__dict__"):
+                continue
+            for key, value in section_obj.__dict__.items():
+                items[(section_name, key)] = value
+        return items
+
     def save_to_file(self, fpath):
-        tmp = f"{fpath}.tmp"
+        """Сохраняет конфиг. Если файл существует — обновляет только значения, сохраняя комментарии и структуру."""
         os.makedirs(os.path.dirname(fpath) or ".", exist_ok=True)
+        all_items = self._get_all_items()
+        if os.path.exists(fpath):
+            self._save_merged(fpath, all_items)
+        else:
+            tmp = f"{fpath}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                self._write(f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, fpath)
+
+    def _save_merged(self, fpath, all_items):
+        """Обновляет значения в файле, сохраняя комментарии и структуру."""
+        key_val_re = re.compile(r'^(\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*=\s*)(.*)$')
+        current_section = None
+        lines_out = []
+        replaced = set()  # (section, key)
+        last_key_line = {}  # section -> index в lines_out
+        last_section_header = {}  # section -> index (для секций без ключей)
+        with open(fpath, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith('[') and stripped.endswith(']'):
+                    current_section = stripped[1:-1].strip()
+                    last_section_header[current_section] = len(lines_out)
+                    lines_out.append(line)
+                    continue
+                m = key_val_re.match(line)
+                if m and current_section is not None:
+                    indent, key, eq_part, old_val = m.groups()
+                    k = (current_section, key)
+                    if k in all_items:
+                        formatted = self._to_ini_literal(all_items[k])
+                        if formatted is not None:
+                            lines_out.append("%s%s%s%s\n" % (indent, key, eq_part, formatted))
+                            replaced.add(k)
+                        else:
+                            lines_out.append(line)
+                        last_key_line[current_section] = len(lines_out) - 1
+                    else:
+                        lines_out.append(line)
+                else:
+                    lines_out.append(line)
+        # Добавляем ключи из all_items, которых не было в файле
+        missing_by_section = {}
+        for (sec, key) in all_items:
+            if (sec, key) not in replaced:
+                missing_by_section.setdefault(sec, []).append(key)
+        inserts = []  # (index, [lines])
+        for sec, keys in missing_by_section.items():
+            insert_pos = last_key_line.get(sec, last_section_header.get(sec, -1)) + 1
+            new_lines = ["%s = %s\n" % (k, self._to_ini_literal(all_items[(sec, k)])) for k in keys]
+            if insert_pos == 0 and sec not in last_section_header:
+                new_lines = ["[%s]\n" % sec] + new_lines
+            inserts.append((insert_pos, new_lines))
+        for pos, new_lines in sorted(inserts, key=lambda x: -x[0]):
+            lines_out[pos:pos] = new_lines
+        tmp = f"{fpath}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            self._write(f)
-            f.flush(); os.fsync(f.fileno())
+            f.writelines(lines_out)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, fpath)
 
 

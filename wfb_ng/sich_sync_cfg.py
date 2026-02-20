@@ -21,10 +21,12 @@ def _settings_to_dict(station_settings_obj):
             continue  # если это служебная секция или нет дикта , то пропускаем
         out[section_name] = {}  # создаю пустую коробку для секции с которой буду работать
         for property_name, property_value in section_obj.__dict__.items(): # проверяю по очереди все параметры секции
-            if isinstance(property_value, (str, int, float, bool, type(None))): #встроенной питоновской функцией проверяю значения т.е они стандартные типы или нет
-                out[section_name][property_name] = property_value #после проверки - добавляю в "коробку" т.е дикт out
+            if isinstance(property_value, (str, int, float, bool, type(None), list, tuple)):  # list/tuple — передаём как есть (JSON-массивы)
+                out[section_name][property_name] = property_value
+            elif isinstance(property_value, dict):
+                out[section_name][property_name] = dict(property_value)  # dict — передаём как есть
             else:
-                out[section_name][property_name] = str(property_value) # если не стандартный тип, то приводим к строке
+                out[section_name][property_name] = str(property_value)  # fallback: остальное — в строку
     return out
 
 
