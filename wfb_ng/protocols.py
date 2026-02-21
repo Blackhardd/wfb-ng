@@ -476,7 +476,7 @@ class RXAntennaProtocol(LineReceiver):
 
                 epoch, fec_type, fec_k, fec_n = list(int(i) for i in cols[2].split(':'))
                 self.session = dict(fec_type=fec_types.get(fec_type, 'Unknown'), fec_k=fec_k, fec_n=fec_n, epoch=epoch)
-                log.msg('New session detected [%s]: FEC=%s K=%d, N=%d, epoch=%d' % (self.rx_id, fec_types.get(fec_type, 'Unknown'), fec_k, fec_n, epoch))
+                log.msg('Обнаружено новое подключение: Тунель:[%s]: FEC=%s K=%d, N=%d, epoch=%d' % (self.rx_id, fec_types.get(fec_type, 'Unknown'), fec_k, fec_n, epoch))
 
                 if self.ant_stat_cb is not None:
                     self.ant_stat_cb.process_new_session(self.rx_id, self.session)

@@ -14,11 +14,15 @@ from twisted.protocols.basic import Int32StringReceiver
 # ==================== УТИЛИТЫ ====================
 
 class Utils:
-    """Утилиты для работы со счётчиками и данными"""
+    """
+    Утилиты для работы со счётчиками и данными
+    """
 
     @staticmethod
     def clamp(n, min_val, max_val):
-        """Ограничение значения в диапазоне [min_val, max_val]"""
+        """
+        Ограничение значения в диапазоне [min_val, max_val]
+        """
         return max(min_val, min(n, max_val))
 
     @staticmethod
@@ -61,7 +65,9 @@ class Utils:
 # ==================== ПРИЁМ ДАННЫХ ОТ WFB_RX ====================
 
 class Stats(Int32StringReceiver):
-    """Протокол для получения данных статистики от wfb_rx"""
+    """
+    Протокол для получения данных статистики от wfb_rx
+    """
     MAX_LENGTH = 1024 * 1024
 
     def stringReceived(self, string):
@@ -77,7 +83,9 @@ class Stats(Int32StringReceiver):
 
 
 class StatsFactory(ReconnectingClientFactory):
-    """Фабрика для управления подключением к wfb_rx"""
+    """
+    Фабрика для управления подключением к wfb_rx
+    """
     noisy = False
     maxDelay = 1.0
 

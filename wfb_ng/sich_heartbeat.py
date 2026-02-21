@@ -133,8 +133,8 @@ class HeartbeatGS(DatagramProtocol):
         }
         try:
             payload = _encode(data)
-            self.transport.write(payload, (DRONE_IP, HEARTBEAT_DRONE_PORT))
             self.transport.write(payload, ("127.0.0.1", HEARTBEAT_STATS_PORT_SENT))
+            self.transport.write(payload, (DRONE_IP, HEARTBEAT_DRONE_PORT))
         except Exception as error:
             log.msg("[Heartbeat] send: %s" % error)
 
@@ -143,8 +143,6 @@ class HeartbeatGS(DatagramProtocol):
         if message is None:
             return
         self._last_from_drone = message
-        remote_local = message.get("local") or {}
-        log.msg("[HBeat] GS <- Drone: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"), remote_local.get("snr")))
         try:
             self.transport.write(data, ("127.0.0.1", HEARTBEAT_STATS_PORT_RECEIVED))
         except Exception:
@@ -185,8 +183,8 @@ class HeartbeatDrone(DatagramProtocol):
         }
         try:
             payload = _encode(data)
-            self.transport.write(payload, (GS_IP, HEARTBEAT_GS_PORT))
             self.transport.write(payload, ("127.0.0.1", HEARTBEAT_STATS_PORT_SENT))
+            self.transport.write(payload, (GS_IP, HEARTBEAT_GS_PORT))
         except Exception as error:
             log.msg("[Heartbeat] send: %s" % error)
 
@@ -195,8 +193,6 @@ class HeartbeatDrone(DatagramProtocol):
         if message is None:
             return
         self._last_from_gs = message
-        remote_local = message.get("local") or {}
-        log.msg("[HBeat] Drone <- GS: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"), remote_local.get("snr")))
         try:
             self.transport.write(data, ("127.0.0.1", HEARTBEAT_STATS_PORT_RECEIVED))
         except Exception:

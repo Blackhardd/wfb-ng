@@ -6,7 +6,7 @@ from twisted.internet import reactor, protocol, task, defer
 from twisted.internet.protocol import ReconnectingClientFactory
 
 from .sich_frequency_selection import FrequencySelection
-from .sich_power_selection import PowerSelection, GSPowerController
+from .sich_power_selection import PowerSelection, global_power_selection_mode
 from .sich_status_manager import StatusManager
 from .sich_connection import ConnectionMetricsManager, DataHandler
 from .sich_heartbeat import HeartbeatGS, HeartbeatDrone, HEARTBEAT_GS_PORT, HEARTBEAT_DRONE_PORT
@@ -16,15 +16,19 @@ from .sich_sync_cfg import get_config_hash, get_config_as_dict, SyncCfgOnConnect
 from .conf import settings
 
 
+# Включает TCP_NODELAY и SO_KEEPALIVE для быстрого init после connectionMade, быстрой доставки команд и своевременного обнаружения потери связи.
+# Использую его в connectionMade в ооп классе ManagerJSONClient/ManagerJSONServer - для init, freq_sel_hop, tx_power и других команд.
+# Без єтого init/команды задерживались а потеря связи обнаруживалась позже чем надо
 def _set_tcp_options(transport):
-    """Keepalive + TCP_NODELAY: быстрая отправка init без буферизации Nagle."""
     try:
-        h = getattr(transport, "getHandle", None) or getattr(transport, "socket", None)
-        if h is None:
+        # Пытаемся получить сокет соединения
+        get_socket = getattr(transport, "getHandle", None) or getattr(transport, "socket", None)
+        if get_socket is None:
             return
-        s = h() if callable(h) else h
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # Получаем сокет и устанавливаем опции
+        sock = get_socket() if callable(get_socket) else get_socket
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     except Exception:
         pass
 
@@ -265,7 +269,9 @@ class Manager:
         self.data_handler.add_callback(self._on_radio_stats_for_status)
 
     def _on_radio_stats_for_status(self, rx_id, stats_dict):
-        """Уведомляем StatusManager только когда реально принят хотя бы один пакет (не просто приход stats с PER 100%)."""
+        """
+        Уведомляем StatusManager только когда реально принят хотя бы один пакет (не просто приход stats с PER 100%)
+        """
         if not getattr(self, 'status_manager', None):
             return
         p_total = stats_dict.get('p_total', 0)
@@ -283,7 +289,9 @@ class Manager:
         return self._is_connected
 
     def process_init_command(self, message):
-        """Обработка команды init (вызывается из ManagerJSONServer и ManagerJSONClient на дроне)."""
+        """
+        Обработка команды init (вызывается из ManagerJSONServer и ManagerJSONClient на дроне)
+        """
         try:
             if message.get("freq_sel", {}).get("enabled") and self.frequency_selection.is_enabled():
                 pass
@@ -296,10 +304,10 @@ class Manager:
         Обработка входящей команды от пира. Возвращает dict-ответ для отправки.
         Используется на сервере (оба стороны) и на клиенте дрона при приёме команд от GS по входящему соединению.
         """
-# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+        # добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
         if message.get("request"):
             return self._handle_request_from_peer(message)
-# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+        # добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
         response = {"status": "success"}
         command = message.get("command")
         if command == "init":
@@ -338,31 +346,38 @@ class Manager:
 # Эта функция нужна для обработки запросов между дроном и ГС.
 # Например, если дрон отправит запрос на обновление конфига ГС.
     def _handle_request_from_peer(self, message):
-        """Запрос от пира (например дрон -> ГС). По умолчанию не поддерживается."""
+        """
+        Запрос от пира (например дрон -> ГС). По умолчанию не поддерживается
+        """
         return {"status": "error", "error": "unsupported"}
 
     def _mark_first_connect(self):
-        """Записать таймстамп первого подключения (для uptime)."""
+        """
+        Записать таймстамп первого подключения 
+        """
         if self._first_connect_ts is None:
             self._first_connect_ts = time.time()
             log.msg("[Manager] First connect ts=%.2f (uptime starts)" % self._first_connect_ts)
 
     def get_connection_uptime_sec(self) -> float | None:
-        """Сколько секунд устройство в подключённом состоянии. None если ещё не подключались."""
+        """
+        Сколько секунд устройство в подключённом состоянии. None если ещё не подключались."""
         if self._first_connect_ts is None:
             return None
         return time.time() - self._first_connect_ts
 
     def on_connected(self):
-        """При установлении TCP с GS — выходим из waiting в connected (синхрон с GS после init)."""
+        """
+        При установлении TCP с GS выходим из waiting в connected (синхрон с GS после init)
+        """
         self._mark_first_connect()
-        log.msg("Management connection established")
+        log.msg("def on_connected: Успешное установление соеденения по TCP")
         if getattr(self, "status_manager", None) and self.status_manager.get_status() == "waiting":
             self.status_manager._transition_to("connected")
 
     def on_disconnected(self, reason):
         err = reason.getErrorMessage() if hasattr(reason, 'getErrorMessage') else str(reason)
-        log.msg("Management connection closed: %s" % err)
+        log.msg("def on_disconnected: Разрыв соеденения по TCP: %s" % err)
         self._is_connected = False
 
     def on_status_changed(self, old_status, new_status):
@@ -371,7 +386,6 @@ class Manager:
 
     def update_config(self, data): # обновляем cfg по секциям
         from .conf import wfb_ng_cfg, station_settings
-        from .sich_startup_log import log_startup
 
         for section_name, section_data in data.items():
             if not station_settings.has_section(section_name):
@@ -383,7 +397,7 @@ class Manager:
                 section.set(name, value)
 
         station_settings.save_to_file(wfb_ng_cfg)
-        log_startup("Config saved to %s" % wfb_ng_cfg)
+        log.msg("Config saved to %s" % wfb_ng_cfg)
     
     def _cleanup(self):
         """
@@ -402,22 +416,16 @@ class GSManager(Manager):
         # StatusManager — управляет статусами соединения
         self.status_manager = StatusManager(config, wlans, manager=self)
 
-        # Хопы вызываются напрямую из Status Manager (в состояниях)
-
-        # Запуск единого DataHandler
+        # DataHandler - получение статистики по радиоканалу\а у wfb_rx
         reactor.callWhenRunning(self.data_handler.start)
 
-        # Create management client
+        # Создаем и запускаем TCP клиент для отправки команд на дрон
         self.client_f = ManagerJSONClientFactory(self)
         reactor.connectTCP("10.5.0.2", 14888, self.client_f)
 
-        # Create and start management server
+        # Создаем и запускаем TCP сервер для приёма команд от дрона
         self.server_f = ManagerJSONServerFactory(self)
         reactor.listenTCP(14889, self.server_f)
-
-        # Контроллер мощности: GS по своему RSSI отправляет команды дрону (increase/decrease)
-        self.power_controller = GSPowerController(self)
-        reactor.callWhenRunning(self.power_controller.start)
 
         # Heartbeat по UDP
         self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_GS_PORT, HeartbeatGS(self))
@@ -429,7 +437,7 @@ class GSManager(Manager):
         self._init_retry_task = task.LoopingCall(self._periodic_init_retry)
         self._init_retry_task.start(self._init_retry_interval)
 
-# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+# добавил 18.02.2026  сделать синхронизацию конфинга между ГС
     def _handle_request_from_peer(self, message):
         """Обработка запросов от дрона (get_config_hash, get_config)."""
         req = message.get("request")
@@ -438,15 +446,19 @@ class GSManager(Manager):
         if req == "get_config":
             return {"status": "ok", "config": get_config_as_dict()}
         return super()._handle_request_from_peer(message)
-# добавил 18.02.2026 для попытки сделать синхронизацию конфинга между ГС
+# добавил 18.02.2026  синхронизацию конфинга между ГС
 
     def on_incoming_server_connection(self, server_protocol):
-        """Вызывается при входящем соединении от дрона. Используем для init, если клиент ещё не готов."""
+        """
+        Вызывается при входящем соединении от дрона. Используем для init, если клиент ещё не готов
+        """
         self._incoming_server_protocol = server_protocol
         self._try_init_over_incoming()
 
     def _try_init_over_incoming(self):
-        """Попытаться отправить init по входящему соединению (fallback при перезагрузке дрона)."""
+        """
+        Попытаться отправить init по входящему соединению (fallback при перезагрузке дрона)
+        """
         if self._is_connected: 
             return
         if not self._incoming_server_protocol or not self._incoming_server_protocol.transport:
@@ -474,7 +486,9 @@ class GSManager(Manager):
         d.errback(Exception("Init response timeout (%ds)" % self._init_timeout_sec))
 
     def _periodic_init_retry(self):
-        """Периодическая повторная попытка init, пока в waiting и TCP без handshake (асимметрия/потери)."""
+        """
+        Периодическая повторная попытка init, пока в waiting и TCP
+        """
         if self._is_connected:
             return
         if self.status_manager.get_status() != "waiting":
@@ -570,11 +584,9 @@ class GSManager(Manager):
     def update_config(self, data):
         super().update_config(data)
 
-    def _cleanup(self): # очищаю при остановке сервера и дрона
+    def _cleanup(self):
         if getattr(self, "_init_retry_task", None) and self._init_retry_task.running:
             self._init_retry_task.stop()
-        if hasattr(self, 'power_controller') and self.power_controller:
-            self.power_controller.stop()
         if hasattr(self, '_heartbeat_udp') and self._heartbeat_udp:
             self._heartbeat_udp.stopListening()
         super()._cleanup()
@@ -589,7 +601,13 @@ class DroneManager(Manager):
         self.status_manager = StatusManager(config, wlans, manager=self)
 
         # PowerSelection — адаптивная мощность передатчика (только на дроне)
-        self.power_selection = PowerSelection(self)
+        if global_power_selection_mode() and settings.common.power_selection_levels:
+            self.power_selection = PowerSelection(self)
+            log.msg("[PS] power_selection_mode=enable, disarm=min ")
+        else:
+            self.power_selection = None
+            if not global_power_selection_mode():
+                log.msg("[PS] power_selection_mode= disable, адаптер сам ставит txpower")
 
         # Запуск единого DataHandler (RSSI/PER/SNR пойдут в metrics_manager и на дрон)
         reactor.callWhenRunning(self.data_handler.start)
@@ -609,19 +627,22 @@ class DroneManager(Manager):
         self.sync_cfg = SyncCfgOnConnect()
 
     def on_status_changed(self, old_status, new_status):
-        """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS."""
+        """Мощность: только disarm = min (16 dBm), все остальные статусы = max (26 dBm)."""
         if new_status == "connected":
             self.sync_cfg.on_entered_connected(self)
         if not self.status_manager:
             return
-        if new_status == self.status_manager.STATUS_ARMED:
-            self.power_selection.on_arm()
-        elif new_status == self.status_manager.STATUS_DISARMED:
-            self.power_selection.on_disarm()
-            self.power_selection.set_minimum_power()
-        elif new_status == self.status_manager.STATUS_CONNECTED:
-            self.power_selection.set_minimum_power()
-        # Отправка статуса дрону только на ГС (у дрона нет send_command_to_drone).
+        if self.power_selection:
+            if new_status == self.status_manager.STATUS_ARMED:
+                self.power_selection.on_arm()
+            elif new_status == self.status_manager.STATUS_DISARMED:
+                self.power_selection.on_disarm()
+            elif new_status in (self.status_manager.STATUS_CONNECTED,
+                               self.status_manager.STATUS_LOST,
+                               self.status_manager.STATUS_RECOVERY):
+                # Только disarm = min; во всех остальных — max
+                self.power_selection.on_connected()
+        # STATUS_WAITING: при init уже active → max
 
     def _cleanup(self):
         if hasattr(self, 'power_selection') and self.power_selection:
