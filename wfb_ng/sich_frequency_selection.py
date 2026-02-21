@@ -429,24 +429,20 @@ class FrequencySelection:
         self.hop_local = HopLocalOnly(manager, self.channels)
         self.hop_at_time = HopScheduledGS2Drone(manager, self.channels)
         # Только ссылки на текущие Deferred (не флаги). Очищаются при завершении/отмене — после
-        # восстановления в connected/armed/disarmed новые запланированные хопы запускаются как обычно.
-        self._pending_hop_request_d = None   # Deferred от request_hop() (ожидание ответа от дрона)
-        self._pending_scheduled_hop_d = None  # Deferred от hop_at_drone_time (deferLater)
         # Лог канала раз в секунду и на ГС, и на дроне (на дроне stats могут приходить реже — лог не зависел от них)
         self._channel_log_task = task.LoopingCall(self._log_current_channel_once)
         self._channel_log_task.start(1.0)
+        # восстановления в connected/armed/disarmed новые запланированные хопы запускаются как обычно.
+        self._pending_hop_request_d = None   # Deferred от request_hop() (ожидание ответа от дрона)
+        self._pending_scheduled_hop_d = None  # Deferred от hop_at_drone_time (deferLater)
         log.msg(f"[FS] Initialized (hops disabled). Channel: {format_channel_freq(self.channels.current.freq)}")
+
+    def _log_current_channel_once(self):
+        """Раз в секунду — логирование отключено (ранее: канал, RSSI, PER, SNR, Score)."""
+        pass
 
     def is_enabled(self):
         return self.enabled and self.channels.count > 1
-
-    def _log_current_channel_once(self):
-        """Раз в секунду вывести в лог канал, RSSI, PER, SNR, Score (одинаково на ГС и дроне)."""
-        ch = self.channels.current
-        rssi, per, snr, score = ch.get_stats_for_log()
-        rssi_str = f"{rssi} dBm" if rssi is not None else "N/A"
-        ch_str = format_channel_freq(ch.freq)
-        log.msg(f"Канал:{ch_str} - RSSI: {rssi_str}, PER: {per}%, SNR: {snr:.2f} dB, Score: {score:.2f}")
 
     def reset_all_channels_stats(self):
         log.msg("[FS] Resetting all channel statistics")

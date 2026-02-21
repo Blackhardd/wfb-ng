@@ -609,7 +609,7 @@ class DroneManager(Manager):
         self.sync_cfg = SyncCfgOnConnect()
 
     def on_status_changed(self, old_status, new_status):
-        """При смене статуса: connected/disarmed -> минимум мощности; armed -> управление по RSSI с GS."""
+        """Мощность: только disarm = min (16 dBm), все остальные статусы = max (26 dBm)."""
         if new_status == "connected":
             self.sync_cfg.on_entered_connected(self)
         if not self.status_manager:
@@ -618,10 +618,12 @@ class DroneManager(Manager):
             self.power_selection.on_arm()
         elif new_status == self.status_manager.STATUS_DISARMED:
             self.power_selection.on_disarm()
-            self.power_selection.set_minimum_power()
-        elif new_status == self.status_manager.STATUS_CONNECTED:
-            self.power_selection.set_minimum_power()
-        # Отправка статуса дрону только на ГС (у дрона нет send_command_to_drone).
+        elif new_status in (self.status_manager.STATUS_CONNECTED,
+                           self.status_manager.STATUS_LOST,
+                           self.status_manager.STATUS_RECOVERY):
+            # Только disarm = min; во всех остальных — max
+            self.power_selection.on_connected()
+        # STATUS_WAITING: при init уже active → max
 
     def _cleanup(self):
         if hasattr(self, 'power_selection') and self.power_selection:
