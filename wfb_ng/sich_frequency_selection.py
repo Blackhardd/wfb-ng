@@ -94,19 +94,6 @@ class Channel:
         if self._on_score_updated:
             self._on_score_updated(self, per=per)
 
-    def get_stats_for_log(self):
-        """Текущие rssi, per, snr, score для лога (без изменения состояния)."""
-        n = _score_frames()
-        rssi = calculate_rssi(self._measurements)
-        per = calculate_per(self._measurements, n)
-        snr = calculate_snr(self._measurements, n)
-        max_pen = _score_per_max_penalty()
-        snr_thr = _score_snr_min_threshold()
-        pen_per = _score_per_weight() * Utils.clamp(per / max_pen, 0.0, 1.0)
-        pen_snr = _score_snr_weight() * Utils.clamp((snr_thr - snr) / snr_thr, 0.0, 1.0)
-        score = 100 - (pen_per + pen_snr)
-        return rssi, per, snr, score
-
     @property
     def freq(self):
         return self._freq
@@ -131,7 +118,6 @@ class Channel:
         self._on_score_updated = callback
 
 
-    #
     def clear_measurements(self):
         keep = _channel_keep_history()
         for stream in [self._measurements.video, self._measurements.mavlink, self._measurements.tunnel]:
@@ -303,8 +289,6 @@ def switch_wifiradio_to_channel(manager, channels, target_channel):
         raise
 
     channels.set_current(target_channel)
-    if hasattr(manager, "metrics_manager") and manager.metrics_manager:
-        manager.metrics_manager.set_current_freq(target_freq)
     if hasattr(target_channel, "clear_measurements"):
         target_channel.clear_measurements()
     if hasattr(target_channel, "_switched_at"):

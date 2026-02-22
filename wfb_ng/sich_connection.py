@@ -391,15 +391,6 @@ def calculate_snr(measurements: ChannelMeasurements, frames: int = None) -> floa
     return Utils.linear_average_snr(snr_vals)
 
 
-def has_received_data(measurements: ChannelMeasurements) -> bool:
-    for meas in measurements.values():
-        if len(meas) > 0:
-            for stats in meas:
-                if stats.p_total > 0:
-                    return True
-    return False
-
-
 def has_any_measurements(measurements: ChannelMeasurements) -> bool:
     for meas in measurements.values():
         if len(meas) > 0:
@@ -410,17 +401,12 @@ def has_any_measurements(measurements: ChannelMeasurements) -> bool:
 class ConnectionMetricsManager:
     """Менеджер метрик радиоканала (PER, RSSI, SNR)"""
 
-    def __init__(self, frames_for_calculation=10, initial_freq=None):
+    def __init__(self, frames_for_calculation=10):
         self._measurements = ChannelMeasurements()
         self._frames = frames_for_calculation
         self._last_per = None
         self._last_rssi = None
         self._last_snr = None
-        self._current_freq = initial_freq
-        self._metrics_callback = None
-
-    def set_metrics_callback(self, callback):
-        self._metrics_callback = callback
 
     def connect_to(self, data_handler):
         def on_stats(rx_id, stats_dict):
@@ -452,8 +438,6 @@ class ConnectionMetricsManager:
         self._last_per = per
         self._last_rssi = rssi
         self._last_snr = snr
-        if self._metrics_callback:
-            self._metrics_callback(per, rssi, snr)
 
     def get_metrics(self):
         if self._last_per is None:
@@ -469,9 +453,3 @@ class ConnectionMetricsManager:
         self._last_per = None
         self._last_rssi = None
         self._last_snr = None
-
-    def set_current_freq(self, freq):
-        self._current_freq = freq
-
-    def get_current_freq(self):
-        return self._current_freq

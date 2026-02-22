@@ -197,7 +197,6 @@ class StatusManager:
         self.manager = manager
         self._last_packet_time = None
         self._lost_since = None
-        self._recovered_from_lost_at = None
         self._link_established_first_time = False
         # False пока ни разу не выходили из waiting (холодный старт); после первого connected/armed/disarmed — True
         self._has_ever_established_link = False
@@ -243,10 +242,6 @@ class StatusManager:
         self._current_state = new_state
         self._current_state.on_enter(previous_status=old_status)
 
-        if old_status == "lost" and state_name in ("armed", "connected", "disarmed"):
-            self._recovered_from_lost_at = time.time()
-        if state_name == "lost":
-            self._recovered_from_lost_at = None
         if old_status == "waiting" and state_name in ("connected", "armed", "disarmed"):
             self._has_ever_established_link = True
 
@@ -305,14 +300,6 @@ class StatusManager:
 
     def is_armed(self) -> bool:
         return self.get_status() == self.STATUS_ARMED
-
-    def is_cold_start(self) -> bool:
-        """True: устройство только запустилось, ни разу не имело связи (дрон после перезагрузки и т.п.)."""
-        return self.get_status() == self.STATUS_WAITING and not self._has_ever_established_link
-
-    def is_after_link_loss(self) -> bool:
-        """True: связь была, потом пропала — мы в lost или recovery (не холодный старт)."""
-        return self.get_status() in (self.STATUS_LOST, self.STATUS_RECOVERY)
 
     def stop(self):
         if self._status_check_task and self._status_check_task.running:

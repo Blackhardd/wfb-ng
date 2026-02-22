@@ -146,10 +146,6 @@ class PowerSelection:
         if self.enabled:
             self._transition_to("locked")
 
-    def on_tx_power_command(self, action):
-        """Приём команд tx_power от GS (для будущего адаптивного режима). Сейчас не используется."""
-        pass
-
     def stop(self):
         log.msg("[PS] Stopped")
         
