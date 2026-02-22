@@ -7,7 +7,7 @@ from twisted.internet.protocol import ReconnectingClientFactory
 
 from .sich_frequency_selection import FrequencySelection
 from .sich_power_selection import PowerSelection, global_power_selection_mode
-from .sich_status_manager import StatusManager
+from .sich_status_manager import StatusManager, StatusManagerDisabled
 from .sich_connection import ConnectionMetricsManager, DataHandler
 from .sich_heartbeat import HeartbeatGS, HeartbeatDrone, HEARTBEAT_GS_PORT, HEARTBEAT_DRONE_PORT
 from .conf import settings
@@ -264,24 +264,34 @@ class GSManager(Manager):
     def __init__(self, config, wlans):
         super().__init__(config, wlans)
 
-        # StatusManager — управляет статусами соединения
-        self.status_manager = StatusManager(config, wlans, manager=self)
+        # StatusManager — управляет статусами соединения (status_manager_mode=false = заглушка)
+        if getattr(settings.common, "status_manager_mode", True):
+            self.status_manager = StatusManager(config, wlans, manager=self)
+        else:
+            self.status_manager = StatusManagerDisabled(config, wlans, manager=self)
+            log.msg("[SM] StatusManager отключён (status_manager_mode=false)")
 
         # DataHandler - получение статистики по радиоканалу\а у wfb_rx
         reactor.callWhenRunning(self.data_handler.start)
 
-        # TCP клиент — подключается к дрону, init и команды по этому соединению
+        # TCP клиент — подключается к дрону, init и команды. Не запускаем если выключены status_manager и freq_sel (не нужен).
         self.client_f = ManagerJSONClientFactory(self)
-        reactor.connectTCP("10.5.0.2", 14888, self.client_f)
-
-        # Heartbeat по UDP
-        self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_GS_PORT, HeartbeatGS(self))
-
         self._last_init_attempt = 0.0
-        self._init_timeout_sec = 8 
+        self._init_timeout_sec = 8
         self._init_retry_interval = 3.0
-        self._init_retry_task = task.LoopingCall(self._periodic_init_retry)
-        self._init_retry_task.start(self._init_retry_interval)
+        _need_tcp = getattr(settings.common, "status_manager_mode", True) or getattr(settings.common, "freq_sel_enabled", False)
+        if _need_tcp:
+            reactor.connectTCP("10.5.0.2", 14888, self.client_f)
+            self._init_retry_task = task.LoopingCall(self._periodic_init_retry)
+            self._init_retry_task.start(self._init_retry_interval)
+        else:
+            log.msg("[GS] TCP manager не запущен (status_manager и freq_sel отключены)")
+            self._init_retry_task = None
+
+        # Heartbeat по UDP (можно отключить heartbeat_mode в cfg для тестов)
+        self._heartbeat_udp = None
+        if getattr(settings.common, "heartbeat_mode", True):
+            self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_GS_PORT, HeartbeatGS(self))
 
     def _init_timeout_fire(self, d):
         if d.called:
@@ -374,7 +384,11 @@ class DroneManager(Manager):
     def __init__(self, config, wlans):
         log.msg("[DroneManager] ========== INITIALIZATION START ==========")
         super().__init__(config, wlans)
-        self.status_manager = StatusManager(config, wlans, manager=self)
+        if getattr(settings.common, "status_manager_mode", True):
+            self.status_manager = StatusManager(config, wlans, manager=self)
+        else:
+            self.status_manager = StatusManagerDisabled(config, wlans, manager=self)
+            log.msg("[SM] StatusManager отключён (status_manager_mode=false)")
 
         # PowerSelection — адаптивная мощность передатчика (только на дроне)
         if global_power_selection_mode() and settings.common.power_selection_levels:
@@ -388,12 +402,18 @@ class DroneManager(Manager):
         # Запуск единого DataHandler (RSSI/PER/SNR пойдут в metrics_manager и на дрон)
         reactor.callWhenRunning(self.data_handler.start)
 
-        # Management server — принимает подключения от ГС, команды и ответы по одному соединению
+        # Management server — принимает подключения от ГС. Не запускаем если выключены status_manager и freq_sel.
         self.server_f = ManagerJSONServerFactory(self)
-        reactor.listenTCP(14888, self.server_f)
+        _need_tcp = getattr(settings.common, "status_manager_mode", True) or getattr(settings.common, "freq_sel_enabled", False)
+        if _need_tcp:
+            reactor.listenTCP(14888, self.server_f)
+        else:
+            log.msg("[Drone] TCP manager не запущен (status_manager и freq_sel отключены)")
 
-        # Heartbeat по UDP
-        self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_DRONE_PORT, HeartbeatDrone(self))
+        # Heartbeat по UDP (можно отключить heartbeat_mode в cfg для тестов)
+        self._heartbeat_udp = None
+        if getattr(settings.common, "heartbeat_mode", True):
+            self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_DRONE_PORT, HeartbeatDrone(self))
 
     def on_status_changed(self, old_status, new_status):
         """Мощность: только disarm = min (16 dBm), все остальные статусы = max (26 dBm)."""

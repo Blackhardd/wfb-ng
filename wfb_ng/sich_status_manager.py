@@ -182,6 +182,40 @@ class RecoveryState(ConnectionState):
             self.manager._transition_to("connected")
             log.msg("[Recovery] Link recovered -> connected (дрон мог перезапуститься)")
 
+class StatusManagerDisabled:
+    """
+    Заглушка: статус заморожен на "connected", переходы отключены.
+    Используется при status_manager_mode = False для тестов.
+    """
+    STATUS_WAITING   = "waiting"
+    STATUS_CONNECTED = "connected"
+    STATUS_ARMED     = "armed"
+    STATUS_DISARMED  = "disarmed"
+    STATUS_LOST      = "lost"
+    STATUS_RECOVERY  = "recovery"
+
+    def __init__(self, config, wlans, manager=None):
+        self.manager = manager
+
+    def get_status(self) -> str:
+        return "connected"
+
+    def _transition_to(self, state_name: str):
+        pass
+
+    def on_packet_received(self):
+        pass
+
+    def on_arm_command(self):
+        pass
+
+    def on_disarm_command(self):
+        pass
+
+    def stop(self):
+        pass
+
+
 class StatusManager:
     STATUS_WAITING   = "waiting"
     STATUS_CONNECTED = "connected"
