@@ -53,8 +53,9 @@ class ManagerJSONClient(protocol.Protocol):
         self.manager.on_connected()
         self._process_queue()
 
-    def connectionLost(self, reason): # вызывается при разрыве соединения
-        self.manager.on_disconnected(reason)
+    def connectionLost(self, reason):  # вызывается при разрыве соединения
+        # on_disconnected вызывается только из фабрики (clientConnectionLost), чтобы не дублировать лог
+        pass
 
     def dataReceived(self, data): # обработка полученных данных (ответы от сервера)
         self._buffer += data
@@ -274,12 +275,15 @@ class GSManager(Manager):
         # DataHandler - получение статистики по радиоканалу\а у wfb_rx
         reactor.callWhenRunning(self.data_handler.start)
 
-        # TCP клиент - подключается к дрону, init и команды. Не запускаем если выключены status_manager и freq_sel (не нужен).
+        # TCP клиент - подключается к дрону, init и команды. Блокируем TCP если оба: status_manager и freq_sel выключены.
         self.client_f = ManagerJSONClientFactory(self)
         self._last_init_attempt = 0.0
         self._init_timeout_sec = 8
         self._init_retry_interval = 3.0
-        _need_tcp = getattr(settings.common, "status_manager_mode", True) or getattr(settings.common, "freq_sel_enabled", False)
+        _sm = getattr(settings.common, "status_manager_mode", True)
+        _fs = getattr(settings.common, "freq_sel_enabled", False)
+        _need_tcp = _sm or _fs
+        log.msg("[GS] status_manager_mode=%s freq_sel_enabled=%s => TCP %s" % (_sm, _fs, "вкл" if _need_tcp else "выкл"))
         if _need_tcp:
             reactor.connectTCP("10.5.0.2", 14888, self.client_f)
             self._init_retry_task = task.LoopingCall(self._periodic_init_retry)
@@ -402,9 +406,12 @@ class DroneManager(Manager):
         # Запуск единого DataHandler (RSSI/PER/SNR пойдут в metrics_manager и на дрон)
         reactor.callWhenRunning(self.data_handler.start)
 
-        # Management server - принимает подключения от ГС. Не запускаем если выключены status_manager и freq_sel.
+        # Management server - принимает подключения от ГС. Блокируем TCP если оба: status_manager и freq_sel выключены.
         self.server_f = ManagerJSONServerFactory(self)
-        _need_tcp = getattr(settings.common, "status_manager_mode", True) or getattr(settings.common, "freq_sel_enabled", False)
+        _sm = getattr(settings.common, "status_manager_mode", True)
+        _fs = getattr(settings.common, "freq_sel_enabled", False)
+        _need_tcp = _sm or _fs
+        log.msg("[Drone] status_manager_mode=%s freq_sel_enabled=%s => TCP %s" % (_sm, _fs, "вкл" if _need_tcp else "выкл"))
         if _need_tcp:
             reactor.listenTCP(14888, self.server_f)
         else:
