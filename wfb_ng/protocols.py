@@ -228,7 +228,7 @@ class AntStatsAndSelector(object):
         self.rssi_cb_l.append(rssi_cb)
 
     def get_live_rssi(self):
-        """Текущий RSSI из буфера cur_stats (как на GS) — для лога на дроне, без задержки через frequency_selection."""
+        """Текущий RSSI из буфера cur_stats (как на GS) - для лога на дроне, без задержки через frequency_selection."""
         cur = self.cur_stats
         if not cur:
             return None

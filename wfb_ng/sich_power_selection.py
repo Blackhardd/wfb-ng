@@ -1,5 +1,5 @@
 """
-Power Selection — управление мощностью передатчика ТОЛЬКО на ДРОНЕ.
+Power Selection - управление мощностью передатчика ТОЛЬКО на ДРОНЕ.
 
 TODO: сделать более прозрачный нейминг и описать логику работы для себя
 TODO: Добавить(вернуть) адаптивный режим по RSSI
@@ -21,19 +21,12 @@ from .conf import settings
 
 # Позволяю или не позволяю работать коду управления мощностью передатчика
 def global_power_selection_mode():
-    """
-    Единственная точка контроля.
-    При disable - False
-    При enable - True
-    """
-    power_selection_mode_value = getattr(settings.common, "power_selection_mode", None)
-    if power_selection_mode_value is not None:
-        power_selection_mode_str = str(power_selection_mode_value).lower().strip()
-        if power_selection_mode_str == "enable":
-            return True
-        if power_selection_mode_str == "disable":
-            return False
-    return bool(getattr(settings.common, "power_sel_enabled", False))
+    """True = включено, False = выключено. В конфиге: power_selection_mode = True/False"""
+    v = getattr(settings.common, "power_selection_mode", False)
+    if isinstance(v, bool):
+        return v
+    # Обратная совместимость со строками "enable"/"disable"
+    return str(v).lower().strip() == "enable"
 power_selection_level_list = settings.common.power_selection_levels
 
 def level_to_dbm(value):
@@ -151,7 +144,7 @@ class PowerSelection:
         
     def set_txpower_level(self, level_index):
         """
-        Единая точка изменения мощности. При power_selection_mode=disable — iw не вызывается.
+        Единая точка изменения мощности. При power_selection_mode=False - iw не вызывается.
         """
         if not global_power_selection_mode():
             return

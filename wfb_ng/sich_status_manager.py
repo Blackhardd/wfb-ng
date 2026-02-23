@@ -6,7 +6,7 @@ Two different situations:
 - Link loss: связь была, потом пропала -> lost -> recovery. _status_before_lost хранит состояние до потери.
 
 Различать: is_cold_start() vs is_after_link_loss(). После перезагрузки дрона: GS в recovery
-(потеря связи), дрон в waiting (холодный старт) — по ним можно синхронизировать состояние.
+(потеря связи), дрон в waiting (холодный старт) - по ним можно синхронизировать состояние.
 """
 import time
 from twisted.python import log
@@ -119,7 +119,7 @@ class LostState(ConnectionState):
     _state_name = "lost"
 
     def on_enter(self, previous_status=None):
-        # Запоминаем, в каком состоянии были до lost — туда вернёмся при восстановлении
+        # Запоминаем, в каком состоянии были до lost - туда вернёмся при восстановлении
         if previous_status in ("armed", "connected", "disarmed"):
             self.manager._status_before_lost = previous_status
         else:
@@ -232,7 +232,7 @@ class StatusManager:
         self._last_packet_time = None
         self._lost_since = None
         self._link_established_first_time = False
-        # False пока ни разу не выходили из waiting (холодный старт); после первого connected/armed/disarmed — True
+        # False пока ни разу не выходили из waiting (холодный старт); после первого connected/armed/disarmed - True
         self._has_ever_established_link = False
 
         self._states = {
@@ -245,7 +245,7 @@ class StatusManager:
         }
         self._current_state = None
         self._previous_status = None
-        # Состояние до потери связи (connected/armed/disarmed) — в него возвращаемся при восстановлении
+        # Состояние до потери связи (connected/armed/disarmed) - в него возвращаемся при восстановлении
         self._status_before_lost = "connected"
 
         self._status_check_task = task.LoopingCall(self._periodic_check)

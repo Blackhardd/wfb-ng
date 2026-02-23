@@ -194,8 +194,8 @@ class Manager:
         DataHandler -> frequency_selection.channels
         DataHandler -> status_manager.on_packet_received (если есть)
 
-        Источник один — stats от wfb_rx по любому потоку (video/mavlink/tunnel).
-        Как только по любому из потоков приходят данные — считаем «пакет получен» для статуса связи.
+        Источник один - stats от wfb_rx по любому потоку (video/mavlink/tunnel).
+        Как только по любому из потоков приходят данные - считаем «пакет получен» для статуса связи.
         """
         self.metrics_manager.connect_to(self.data_handler)
 
@@ -264,7 +264,7 @@ class GSManager(Manager):
     def __init__(self, config, wlans):
         super().__init__(config, wlans)
 
-        # StatusManager — управляет статусами соединения (status_manager_mode=false = заглушка)
+        # StatusManager - управляет статусами соединения (status_manager_mode=false = заглушка)
         if getattr(settings.common, "status_manager_mode", True):
             self.status_manager = StatusManager(config, wlans, manager=self)
         else:
@@ -274,7 +274,7 @@ class GSManager(Manager):
         # DataHandler - получение статистики по радиоканалу\а у wfb_rx
         reactor.callWhenRunning(self.data_handler.start)
 
-        # TCP клиент — подключается к дрону, init и команды. Не запускаем если выключены status_manager и freq_sel (не нужен).
+        # TCP клиент - подключается к дрону, init и команды. Не запускаем если выключены status_manager и freq_sel (не нужен).
         self.client_f = ManagerJSONClientFactory(self)
         self._last_init_attempt = 0.0
         self._init_timeout_sec = 8
@@ -390,19 +390,19 @@ class DroneManager(Manager):
             self.status_manager = StatusManagerDisabled(config, wlans, manager=self)
             log.msg("[SM] StatusManager отключён (status_manager_mode=false)")
 
-        # PowerSelection — адаптивная мощность передатчика (только на дроне)
+        # PowerSelection - адаптивная мощность передатчика (только на дроне)
         if global_power_selection_mode() and settings.common.power_selection_levels:
             self.power_selection = PowerSelection(self)
-            log.msg("[PS] power_selection_mode=enable, disarm=min ")
+            log.msg("[PS] power_selection_mode=True, disarm=min ")
         else:
             self.power_selection = None
             if not global_power_selection_mode():
-                log.msg("[PS] power_selection_mode= disable, адаптер сам ставит txpower")
+                log.msg("[PS] power_selection_mode=False, адаптер сам ставит txpower")
 
         # Запуск единого DataHandler (RSSI/PER/SNR пойдут в metrics_manager и на дрон)
         reactor.callWhenRunning(self.data_handler.start)
 
-        # Management server — принимает подключения от ГС. Не запускаем если выключены status_manager и freq_sel.
+        # Management server - принимает подключения от ГС. Не запускаем если выключены status_manager и freq_sel.
         self.server_f = ManagerJSONServerFactory(self)
         _need_tcp = getattr(settings.common, "status_manager_mode", True) or getattr(settings.common, "freq_sel_enabled", False)
         if _need_tcp:
@@ -427,7 +427,7 @@ class DroneManager(Manager):
             elif new_status in (self.status_manager.STATUS_CONNECTED,
                                self.status_manager.STATUS_LOST,
                                self.status_manager.STATUS_RECOVERY):
-                # Только disarm = min; во всех остальных — max
+                # Только disarm = min; во всех остальных - max
                 self.power_selection.on_connected()
         # STATUS_WAITING: при init уже active → max
 

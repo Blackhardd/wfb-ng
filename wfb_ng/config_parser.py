@@ -91,7 +91,7 @@ class Settings(object):
         return items
 
     def save_to_file(self, fpath):
-        """Сохраняет конфиг. Если файл существует — обновляет только значения, сохраняя комментарии и структуру."""
+        """Сохраняет конфиг. Если файл существует - обновляет только значения, сохраняя комментарии и структуру."""
         os.makedirs(os.path.dirname(fpath) or ".", exist_ok=True)
         all_items = self._get_all_items()
         if os.path.exists(fpath):

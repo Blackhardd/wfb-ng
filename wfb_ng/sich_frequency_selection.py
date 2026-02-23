@@ -1,5 +1,5 @@
 """
-Frequency Selection — каналы, фабрика каналов, score/статистика по каналам.
+Frequency Selection - каналы, фабрика каналов, score/статистика по каналам.
 Переключение каналов (хопы) отключено по умолчанию.
 """
 import time 
@@ -138,11 +138,11 @@ class ChannelsFactory:
 
     @classmethod
     def create(cls, freqs) -> "ChannelsFactory":
-        """freqs — список частот (freq_sel_frequencies); для каждой создаётся Channel(freq)."""
+        """freqs - список частот (freq_sel_frequencies); для каждой создаётся Channel(freq)."""
         return cls(channels=[Channel(freq) for freq in freqs])
 
     def get_single_freq(self, value):
-        """Вернуть Channel для частоты value: если есть — его, иначе создать и добавить. value может быть числом или dict (per-wlan из конфига)."""
+        """Вернуть Channel для частоты value: если есть - его, иначе создать и добавить. value может быть числом или dict (per-wlan из конфига)."""
         if isinstance(value, dict):
             value = next(iter(value.values()))
         if value in self.as_freq:
@@ -154,10 +154,10 @@ class ChannelsFactory:
 
 class Channels:
     """
-    1) Один канал wifi_channel = старт и резерв (_startup и _reserve — один и тот же Channel).
+    1) Один канал wifi_channel = старт и резерв (_startup и _reserve - один и тот же Channel).
     2) Список _list = только freq_sel, порядок из конфига; по нему прыгают HopLocalOnly / HopScheduledGS2Drone.
     3) Центральная логика каналов: next_channel(), prev_channel(), by_freq(), first_freq_sel_channel, last_freq_sel_channel.
-       Хопы и приложение вызывают только эти методы — без дублирования логики.
+       Хопы и приложение вызывают только эти методы - без дублирования логики.
     """
     def __init__(self, frequency_selection, wifi_channel_freq, reserve_freq, freq_sel_frequencies):
         self.frequency_selection = frequency_selection
@@ -206,7 +206,7 @@ class Channels:
         return None
 
     def next_channel(self):
-        """Следующий канал в freq_sel (циклично). Центральная точка — используйте отсюда."""
+        """Следующий канал в freq_sel (циклично). Центральная точка - используйте отсюда."""
         if not self._list:
             return None
         idx = self._index_of(self._current_channel)
@@ -215,7 +215,7 @@ class Channels:
         return self._list[(idx + 1) % len(self._list)]
 
     def prev_channel(self):
-        """Предыдущий канал в freq_sel (циклично). Центральная точка — используйте отсюда."""
+        """Предыдущий канал в freq_sel (циклично). Центральная точка - используйте отсюда."""
         if not self._list:
             return None
         idx = self._index_of(self._current_channel)
@@ -297,7 +297,7 @@ def switch_wifiradio_to_channel(manager, channels, target_channel):
     log.msg(f"[HOP SUCCESS] Now on {format_channel_freq(target_freq)}")
 
 # -------------------
-# 1) Только локально — команда на другую сторону не отправляется
+# 1) Только локально - команда на другую сторону не отправляется
 # -------------------
 class HopLocalOnly:
     """
@@ -362,7 +362,7 @@ class HopScheduledGS2Drone:
     def schedule(self, action_time, target_freq=None):
         """
         Запланировать переключение радио на момент action_time.
-        target_freq: частота в MHz или None — тогда: если на wifi_channel -> первый из freq_sel,
+        target_freq: частота в MHz или None - тогда: если на wifi_channel -> первый из freq_sel,
         иначе следующий канал в списке freq_sel.
         """
         if target_freq is not None:
@@ -399,9 +399,9 @@ class HopScheduledGS2Drone:
 class FrequencySelection:
     """
     Каналы, score, статистика по каналам. Держит список каналов и состояние (текущий канал, резерв).
-    Переключение радио не вызывает — для хопов используйте снаружи:
-      HopLocalOnly(manager, self.channels) — только локально;
-      HopScheduledGS2Drone(manager, self.channels) — запланированный хоп GS->дрон.
+    Переключение радио не вызывает - для хопов используйте снаружи:
+      HopLocalOnly(manager, self.channels) - только локально;
+      HopScheduledGS2Drone(manager, self.channels) - запланированный хоп GS->дрон.
     """
 
     def __init__(self, manager):
@@ -412,8 +412,8 @@ class FrequencySelection:
         self.channels = Channels(self, wifi_channel, wifi_channel, freq_sel_channels)
         self.hop_local = HopLocalOnly(manager, self.channels)
         self.hop_at_time = HopScheduledGS2Drone(manager, self.channels)
-        # Только ссылки на текущие Deferred (не флаги). Очищаются при завершении/отмене — после
-        # Лог канала раз в секунду и на ГС, и на дроне (на дроне stats могут приходить реже — лог не зависел от них)
+        # Только ссылки на текущие Deferred (не флаги). Очищаются при завершении/отмене - после
+        # Лог канала раз в секунду и на ГС, и на дроне (на дроне stats могут приходить реже - лог не зависел от них)
         self._channel_log_task = task.LoopingCall(self._log_current_channel_once)
         self._channel_log_task.start(1.0)
         # восстановления в connected/armed/disarmed новые запланированные хопы запускаются как обычно.
@@ -422,7 +422,7 @@ class FrequencySelection:
         log.msg(f"[FS] Initialized (hops disabled). Channel: {format_channel_freq(self.channels.current.freq)}")
 
     def _log_current_channel_once(self):
-        """Раз в секунду — логирование отключено (ранее: канал, RSSI, PER, SNR, Score)."""
+        """Раз в секунду - логирование отключено (ранее: канал, RSSI, PER, SNR, Score)."""
         pass
 
     def is_enabled(self):
@@ -444,7 +444,7 @@ class FrequencySelection:
 
     def handle_hop_command(self):
         """
-        Дрон: при приёме freq_sel_hop — считает время хопа, планирует свой хоп, возвращает ответ для ГС.
+        Дрон: при приёме freq_sel_hop - считает время хопа, планирует свой хоп, возвращает ответ для ГС.
         """
         if not self.is_enabled():
             return {"status": "error", "error": "freq_sel disabled or single channel"}
@@ -457,7 +457,7 @@ class FrequencySelection:
         """
         ГС: запланировать свой хоп на момент action_time (время от дрона).
         Вызывается после получения ответа с полем "time".
-        Цель: если на wifi_channel — первый из freq_sel, иначе следующий канал.
+        Цель: если на wifi_channel - первый из freq_sel, иначе следующий канал.
         """
         def _run_hop():
             # если не channels.current.freq не равен channels.reserve.freq тогда хоп на следующий канал
@@ -524,12 +524,12 @@ class FrequencySelection:
                 setattr(self, name, None)
                 cancelled = True
         if cancelled:
-            log.msg("[FS] Отменён запланированный PER-хоп (приоритет — локальный хоп в lost)")
+            log.msg("[FS] Отменён запланированный PER-хоп (приоритет - локальный хоп в lost)")
 
     def _on_channel_score_updated(self, channel, per=None):
         """
-        PER/SNR — реактивные хопы при резких скачках (короткий cooldown).
-        Score — плановые хопы заранее при плавной деградации (длинный cooldown).
+        PER/SNR - реактивные хопы при резких скачках (короткий cooldown).
+        Score - плановые хопы заранее при плавной деградации (длинный cooldown).
         """
         if not self.is_enabled():
             return
@@ -573,7 +573,7 @@ class FrequencySelection:
             return
 
         # Инициировать хоп может только ГС (send_command_to_drone).
-        # На дроне этого метода нет — не вызываем request_hop() на дроне.
+        # На дроне этого метода нет - не вызываем request_hop() на дроне.
         if not hasattr(self.manager, "send_command_to_drone"):
             return
 

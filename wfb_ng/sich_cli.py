@@ -23,7 +23,7 @@ def _val(v):
 
 
 def _format_ts(v):
-    """Если v — число (Unix sec или ms), вернуть '(DD.MM.YYYY HH:MM:SS) v', иначе _val(v)."""
+    """Если v - число (Unix sec или ms), вернуть '(DD.MM.YYYY HH:MM:SS) v', иначе _val(v)."""
     if v is None:
         return "n/a"
     try:
@@ -174,7 +174,7 @@ def build_display(sent_msg, received_msg):
     )
 
 
-# Отступ по контуру окна (сверху, снизу, слева, справа — 1 символ)
+# Отступ по контуру окна (сверху, снизу, слева, справа - 1 символ)
 BORDER_MARGIN = 1
 # Падинги внутри рамки
 PAD_LEFT = 2
@@ -190,7 +190,7 @@ _PER_BAR_FILL = "#"
 
 
 def _per_to_pct(per):
-    """Привести PER к процентам 0–100 (если пришло 0–1 — умножить на 100)."""
+    """Привести PER к процентам 0–100 (если пришло 0–1 - умножить на 100)."""
     if per is None:
         return None
     try:
@@ -205,7 +205,7 @@ def _per_to_pct(per):
 def _draw_per_chart(stdscr, per_history, inner_left, inner_width, y_start):
     """
     Два графика с вертикальными столбиками (как на референсе): высота = PER 0–100%.
-    Верхний — GS, нижний — Drone. Каждый столбик = одно обновление, новое справа.
+    Верхний - GS, нижний - Drone. Каждый столбик = одно обновление, новое справа.
     """
     label_w = 6  # "GS    " / "Drone "
     scale_w = 5  # " 100%"
@@ -216,7 +216,7 @@ def _draw_per_chart(stdscr, per_history, inner_left, inner_width, y_start):
     h = PER_CHART_HEIGHT
 
     def draw_one_chart(y_base, label, values):
-        # y_base — первая строка этого графика (сверху), рисуем h строк вниз
+        # y_base - первая строка этого графика (сверху), рисуем h строк вниз
         try:
             stdscr.addstr(y_base, inner_left, label)
             stdscr.addstr(y_base + 1, scale_x, "100%")
@@ -259,7 +259,7 @@ def _draw_per_chart(stdscr, per_history, inner_left, inner_width, y_start):
 def _draw_table(stdscr, display, per_history=None):
     """
     Разметка - левая и правая колонки 50%/50%. Падинги задаются константами выше.
-    Внизу — секция графика PER (2 строки: GS, Drone).
+    Внизу - секция графика PER (2 строки: GS, Drone).
     """
     per_history = per_history or []
     try:
@@ -315,7 +315,7 @@ def _draw_table(stdscr, display, per_history=None):
         except curses.error:
             pass
 
-        # В самый низ окна — футер с локальным таймстампом
+        # В самый низ окна - футер с локальным таймстампом
         footer_y = content_y_start + num_rows + 1
         if footer_y < h - m:
             footer_text = (display.footer_line() or "")[:inner_width].replace("\n", " ")
@@ -360,7 +360,7 @@ def _run_hb(stdscr, once):
     last_sent = None
     last_received = None
     last_display = None
-    per_history = []  # список (gs_per_pct, drone_per_pct) — один столбик на обновление
+    per_history = []  # список (gs_per_pct, drone_per_pct) - один столбик на обновление
     try:
         while True:
             ready, _, _ = select.select([sock_recv, sock_send], [], [], REFRESH_INTERVAL)
