@@ -1,11 +1,15 @@
 """
 Обмен данными ГС <-> Дрон по UDP.
 type: heartbeat, local: свои метрики, remote: что получили от пира (или null).
+
+Twisted: heartbeat_callback вызывается в потоке пула (deferToThread), чтобы
+блокирующий callback не останавливал реактор. Если из callback нужно вызвать
+Twisted (reactor, transport) — используйте reactor.callFromThread.
 """
 import json
 import time
 from twisted.python import log
-from twisted.internet import task
+from twisted.internet import task, threads
 from twisted.internet.protocol import DatagramProtocol
 
 from .sich_connection import format_channel_freq
@@ -149,10 +153,17 @@ class HeartbeatGS(DatagramProtocol):
             pass
         callback = _attr(self.manager, "heartbeat_callback")
         if callback:
+            d = threads.deferToThread(callback, message)
+            d.addErrback(lambda f: log.msg("[Heartbeat] callback: %s" % (f.getErrorMessage(),)))
+        listener = getattr(self.manager, "power_rssi_listener", None)
+        # На ГС: по RSSI из heartbeat решает increase/decrease и дергает power_controller.request_power_change
+        if listener:
             try:
-                callback(message)
-            except Exception as error:
-                log.msg("[Heartbeat] callback: %s" % error)
+                gs_metrics = _local(self.manager)
+                drone_metrics = _remote_from_peer(message)
+                listener.on_heartbeat(gs_metrics, drone_metrics)
+            except Exception as e:
+                log.msg("[Heartbeat] power_rssi_listener: %s" % (e,))
 
 
 # --- Дрон  ---

@@ -1,6 +1,6 @@
 """
-Frequency Selection - каналы, фабрика каналов, score/статистика по каналам.
-Переключение каналов (хопы) отключено по умолчанию.
+Frequency Selection - каналы, фабрика каналов, score/статистика по каналам
+Переключение каналов (хопы) отключено по умолчанию
 """
 import time 
 from twisted.python import log
@@ -20,57 +20,38 @@ from .sich_connection import (
 
 def _score_frames():
     return getattr(settings.common, "freq_sel_score_frames", 3)
-
-
 def _score_per_weight():
     return getattr(settings.common, "freq_sel_score_per_weight", 75)
-
-
 def _score_snr_weight():
     return getattr(settings.common, "freq_sel_score_snr_weight", 25)
-
-
 def _score_per_max_penalty():
     return getattr(settings.common, "freq_sel_score_per_max_penalty", 10)
-
-
 def _score_snr_min_threshold():
     return getattr(settings.common, "freq_sel_score_snr_min_threshold", 20)
-
-
 def _channel_keep_history():
     return getattr(settings.common, "freq_sel_channel_keep_history", 5)
-
-
 def _per_hop_min():
     return getattr(settings.common, "freq_sel_per_hop_min", 25)
-
-
 def _per_hop_max():
     return getattr(settings.common, "freq_sel_per_hop_max", 80)
-
-
 def _per_hop_cooldown_sec():
     return getattr(settings.common, "freq_sel_per_hop_cooldown_sec", 15)
-
-
 def _snr_hop_threshold():
-    """SNR dB below which hop is triggered. 0 = disabled."""
+    """SNR 0 = disabled"""
     return getattr(settings.common, "freq_sel_snr_hop_threshold", 0)
-
-
 def _score_hop_threshold():
-    """Score below which hop is triggered. 0 = disabled. Score 0-100."""
+    """Score 0 = disabled"""
     return getattr(settings.common, "freq_sel_score_hop_threshold", 0)
-
-
 def _score_hop_cooldown_sec():
-    """Cooldown for score-based (planned) hops. Longer than PER cooldown."""
+    """Cooldown"""
     return getattr(settings.common, "freq_sel_score_hop_cooldown_sec", 30)
 
 
 class Channel:
-    """Одна частота: измерения (RSSI, PER, SNR), score, callback при обновлении. Не знает про другие каналы."""
+    """
+    Одна частота: измерения (RSSI, PER, SNR), score, callback при обновлении. 
+    Не знает про другие каналы.
+    """
 
     def __init__(self, freq):
         self._freq = freq
@@ -128,7 +109,7 @@ class Channel:
         self._switched_at = time.time()
 
 class ChannelsFactory:
-    """Создание набора Channel по списку частот и «найти или создать» канал по одной частоте (get_single_freq)."""
+    """Создание набора Channel по списку частот и "найти или создать" канал по одной частоте (get_single_freq)."""
     def __init__(self, channels):
         self.channels = channels
 
@@ -435,7 +416,7 @@ class FrequencySelection:
             channel._last_packet_time = 0
             channel._score = [100]
 
-    # ------------------- Запланированный синхронный хоп GS ↔ дрон -------------------
+    # ------------------- Запланированный синхронный хоп GS - дрон -------------------
     # ГС: request_hop() -> команда дрону. Дрон: handle_hop_command() (из manager) -> время в ответ, свой хоп. ГС: hop_at_drone_time(time).
 
     def get_action_time(self, interval=1.0):

@@ -11,7 +11,7 @@ from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.protocols.basic import Int32StringReceiver
 
 
-# ==================== УТИЛИТЫ ====================
+# УТИЛИТЫ 
 
 class Utils:
     """
@@ -62,7 +62,7 @@ class Utils:
         return 10.0 * math.log10(avg_lin)
 
 
-# ==================== ПРИЁМ ДАННЫХ ОТ WFB_RX ====================
+# ПРИЁМ ДАННЫХ ОТ WFB_RX 
 
 class Stats(Int32StringReceiver):
     """
@@ -238,7 +238,7 @@ class DataHandler:
             log.msg("DataHandler: stopped")
 
 
-# ==================== КАНАЛ ↔ МГц ====================
+# ==================== КАНАЛ - МГц ====================
 
 def channel_to_mhz(channel_or_freq: int) -> int | None:
     """Номер канала WiFi -> частота в МГц"""

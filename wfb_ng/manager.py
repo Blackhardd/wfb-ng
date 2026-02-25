@@ -6,7 +6,7 @@ from twisted.internet import reactor, protocol, task, defer
 from twisted.internet.protocol import ReconnectingClientFactory
 
 from .sich_frequency_selection import FrequencySelection
-from .sich_power_selection import PowerSelection, global_power_selection_mode
+from .sich_power_selection import GSPowerSelection, DronePowerSelection, global_power_selection_mode, GSPowerListener
 from .sich_status_manager import StatusManager, StatusManagerDisabled
 from .sich_connection import ConnectionMetricsManager, DataHandler
 from .sich_heartbeat import HeartbeatGS, HeartbeatDrone, HEARTBEAT_GS_PORT, HEARTBEAT_DRONE_PORT
@@ -196,7 +196,7 @@ class Manager:
         DataHandler -> status_manager.on_packet_received (если есть)
 
         Источник один - stats от wfb_rx по любому потоку (video/mavlink/tunnel).
-        Как только по любому из потоков приходят данные - считаем «пакет получен» для статуса связи.
+        Как только по любому из потоков приходят данные - считаем "пакет получен" для статуса связи.
         """
         self.metrics_manager.connect_to(self.data_handler)
 
@@ -204,7 +204,7 @@ class Manager:
             ident = f'{self.get_type()}::{"freq_sel" if self.frequency_selection.is_enabled() else "startup"}::on_stats_received'
             self.data_handler.add_callback(self.frequency_selection.channels.on_stats_received, ident)
 
-        # Любая доставка stats по радиоканалу (любой поток) -> событие «пакет получен» для StatusManager.
+        # Любая доставка stats по радиоканалу (любой поток) -> событие "пакет получен" для StatusManager.
         # Не зависим от mavlink: работает при любом потоке (video/mavlink/tunnel).
         self.data_handler.add_callback(self._on_radio_stats_for_status)
 
@@ -234,6 +234,13 @@ class Manager:
             # Дрон считает action_time, планирует свой хоп на этот момент, отдаёт время ГС для синхронного хопа
             hop_response = self.frequency_selection.handle_hop_command()
             return {**response, **hop_response}
+        if command == "power_command":
+            # Дрон планирует смену мощности на action_time, отдаёт время ГС для синхронного переключения
+            ps = getattr(self, "power_controller", None)
+            if ps is None:
+                return {"status": "error", "error": "power_controller not available"}
+            power_response = ps.handle_power_command(message)
+            return {**response, **power_response}
         return response
 
     def on_connected(self):
@@ -248,7 +255,7 @@ class Manager:
         self._is_connected = False
 
     def on_status_changed(self, old_status, new_status):
-        """Вызывается StatusManager при смене статуса. DroneManager переопределяет для PowerSelection."""
+        """Вызывается StatusManager при смене статуса. DroneManager переопределяет для power_controller (arm/disarm/connected)."""
         pass
 
     def _cleanup(self):
@@ -263,7 +270,7 @@ class GSManager(Manager):
     _type = "gs"
 
     def __init__(self, config, wlans):
-        super().__init__(config, wlans)
+        super().__init__(config, wlans) # super = из twisted библиотеки
 
         # StatusManager - управляет статусами соединения (status_manager_mode=false = заглушка)
         if getattr(settings.common, "status_manager_mode", True):
@@ -275,15 +282,18 @@ class GSManager(Manager):
         # DataHandler - получение статистики по радиоканалу\а у wfb_rx
         reactor.callWhenRunning(self.data_handler.start)
 
-        # TCP клиент - подключается к дрону, init и команды. Блокируем TCP если оба: status_manager и freq_sel выключены.
+        # TCP клиент - подключается к дрону, init и команды. Блокируем TCP если status_manager, freq_sel и power_controller выключены.
         self.client_f = ManagerJSONClientFactory(self)
         self._last_init_attempt = 0.0
         self._init_timeout_sec = 8
         self._init_retry_interval = 3.0
         _sm = getattr(settings.common, "status_manager_mode", True)
         _fs = getattr(settings.common, "freq_sel_enabled", False)
-        _need_tcp = _sm or _fs
-        log.msg("[GS] status_manager_mode=%s freq_sel_enabled=%s => TCP %s" % (_sm, _fs, "вкл" if _need_tcp else "выкл"))
+        _ps = global_power_selection_mode()
+        
+        _need_tcp = _sm or _fs or _ps
+        log.msg("[GS] status_manager_mode=%s freq_sel_enabled=%s power_controller=%s => TCP %s" % (_sm, _fs, _ps, "вкл" if _need_tcp else "выкл"))
+        
         if _need_tcp:
             reactor.connectTCP("10.5.0.2", 14888, self.client_f)
             self._init_retry_task = task.LoopingCall(self._periodic_init_retry)
@@ -297,6 +307,18 @@ class GSManager(Manager):
         if getattr(settings.common, "heartbeat_mode", True):
             self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_GS_PORT, HeartbeatGS(self))
 
+        # power_controller (ГС): шлёт команды дрону и синхронно переключает свою мощность. power_rssi_listener: по RSSI из heartbeat решает increase/decrease.
+        if global_power_selection_mode() and getattr(settings.common, "power_selection_levels", None):
+            self.power_controller = GSPowerSelection(self)
+            self.power_rssi_listener = GSPowerListener(self)
+            log.msg("[PS] power_selection_mode=True на ГС (request_power_change по TCP)")
+        else:
+            self.power_controller = None
+            self.power_rssi_listener = None
+            if not global_power_selection_mode():
+                log.msg("[PS] power_selection_mode=False на ГС")
+        
+        
     def _init_timeout_fire(self, d):
         if d.called:
             return
@@ -340,7 +362,7 @@ class GSManager(Manager):
             return
         if time.time() - self._last_init_attempt < self._init_retry_interval - 0.5:
             return
-        log.msg("[GS] Init retry over client connection")
+        log.msg("[GS] TCP инит из _periodic_init_retry - попытка отправки init после waiting в connected")  # добавил лог для отладки
         self._send_init()
 
     def on_connected(self):
@@ -375,6 +397,10 @@ class GSManager(Manager):
         return None
 
     def _cleanup(self):
+        if hasattr(self, 'power_controller') and self.power_controller:
+            self.power_controller.stop()
+        if hasattr(self, 'power_rssi_listener') and self.power_rssi_listener:
+            self.power_rssi_listener.stop()
         if getattr(self, "_init_retry_task", None) and self._init_retry_task.running:
             self._init_retry_task.stop()
         if hasattr(self, '_heartbeat_udp') and self._heartbeat_udp:
@@ -394,12 +420,12 @@ class DroneManager(Manager):
             self.status_manager = StatusManagerDisabled(config, wlans, manager=self)
             log.msg("[SM] StatusManager отключён (status_manager_mode=false)")
 
-        # PowerSelection - адаптивная мощность передатчика (только на дроне)
+        # power_controller (дрон): принимает power_command по TCP, переключает свою мощность по action_time.
         if global_power_selection_mode() and settings.common.power_selection_levels:
-            self.power_selection = PowerSelection(self)
+            self.power_controller = DronePowerSelection(self)
             log.msg("[PS] power_selection_mode=True, disarm=min ")
         else:
-            self.power_selection = None
+            self.power_controller = None
             if not global_power_selection_mode():
                 log.msg("[PS] power_selection_mode=False, адаптер сам ставит txpower")
 
@@ -423,24 +449,24 @@ class DroneManager(Manager):
             self._heartbeat_udp = reactor.listenUDP(HEARTBEAT_DRONE_PORT, HeartbeatDrone(self))
 
     def on_status_changed(self, old_status, new_status):
-        """Мощность: только disarm = min (16 dBm), все остальные статусы = max (26 dBm)."""
+        """Связка StatusManager -> PowerSelection: см. docstring в sich_power_selection (locked/active по disarm/arm/connected)."""
         if not self.status_manager:
             return
-        if self.power_selection:
+        if self.power_controller:
             if new_status == self.status_manager.STATUS_ARMED:
-                self.power_selection.on_arm()
+                self.power_controller.on_arm()
             elif new_status == self.status_manager.STATUS_DISARMED:
-                self.power_selection.on_disarm()
+                self.power_controller.on_disarm()
             elif new_status in (self.status_manager.STATUS_CONNECTED,
                                self.status_manager.STATUS_LOST,
                                self.status_manager.STATUS_RECOVERY):
-                # Только disarm = min; во всех остальных - max
-                self.power_selection.on_connected()
-        # STATUS_WAITING: при init уже active → max
+                # active: мощность по командам с ГС (RSSI)
+                self.power_controller.on_connected()
+        # STATUS_WAITING: при init уже active -> max
 
     def _cleanup(self):
-        if hasattr(self, 'power_selection') and self.power_selection:
-            self.power_selection.stop()
+        if hasattr(self, 'power_controller') and self.power_controller:
+            self.power_controller.stop()
         if hasattr(self, '_heartbeat_udp') and self._heartbeat_udp:
             self._heartbeat_udp.stopListening()
         super()._cleanup()

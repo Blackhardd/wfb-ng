@@ -1,12 +1,8 @@
 """
-State machine for link status. Same logic on both drone and GS.
-
-Two different situations:
-- Cold start: устройство только запустилось, ещё ни разу не имело связи (waiting, never left).
+State machine 
+- Cold start: устройство только запустилось, ещё ни разу не имело связи (waiting).
+- Link established: связь установлена -> connected.
 - Link loss: связь была, потом пропала -> lost -> recovery. _status_before_lost хранит состояние до потери.
-
-Различать: is_cold_start() vs is_after_link_loss(). После перезагрузки дрона: GS в recovery
-(потеря связи), дрон в waiting (холодный старт) - по ним можно синхронизировать состояние.
 """
 import time
 from twisted.python import log
