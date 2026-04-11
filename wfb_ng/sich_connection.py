@@ -125,8 +125,10 @@ class StatsFactory(ReconnectingClientFactory):
             if session is not None:
                 try:
                     if rx_ant_stats and isinstance(rx_ant_stats, dict) and len(rx_ant_stats) > 0:
-                        rssi_values = [v[2] for v in rx_ant_stats.values() if isinstance(v, (list, tuple)) and len(v) > 2]
-                        snr_values = [v[5] for v in rx_ant_stats.values() if isinstance(v, (list, tuple)) and len(v) > 5]
+                        rssi_values = [v[2] for v in rx_ant_stats.values() if
+                                       isinstance(v, (list, tuple)) and len(v) > 2]
+                        snr_values = [v[5] for v in rx_ant_stats.values() if
+                                      isinstance(v, (list, tuple)) and len(v) > 5]
                         if rssi_values:
                             rssi = int(round(sum(rssi_values) / len(rssi_values)))
                         if snr_values:
@@ -193,6 +195,7 @@ class StatsFactory(ReconnectingClientFactory):
 
 class DataHandler:
     """Главный класс для управления получением данных от wfb_rx"""
+
     def __init__(self, stats_port):
         if not isinstance(stats_port, int):
             raise TypeError(f"stats_port must be int, got {type(stats_port).__name__}")
@@ -213,6 +216,7 @@ class DataHandler:
         def multi_callback(rx_id, stats_dict):
             for cb in self._callbacks:
                 cb(rx_id, stats_dict)
+
         return multi_callback if self._callbacks else None
 
     def start(self):
@@ -426,6 +430,7 @@ class ConnectionMetricsManager:
                 self.add_measurement(rx_id, stats)
             except (TypeError, ValueError, KeyError):
                 pass
+
         data_handler.add_callback(on_stats)
 
     def add_measurement(self, rx_id: str, stats: MeasurementStats):

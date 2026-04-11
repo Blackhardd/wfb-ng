@@ -15,6 +15,7 @@ from abc import ABC
 
 from .sich_connection import format_channel_freq
 
+
 class ConnectionState(ABC):
     _state_name: str = ""
 
@@ -42,6 +43,7 @@ class ConnectionState(ABC):
     def on_periodic_check(self, now: float, time_since_packet: float | None):
         pass
 
+
 class WaitingState(ConnectionState):
     _state_name = "waiting"
     WAITING_RADIO_FALLBACK_SEC = 5.0
@@ -67,6 +69,7 @@ class WaitingState(ConnectionState):
         log.msg("[SM] Ожидание: радио стабильно без TCP рукопожатия, переход к connected (fallback)")
         self.manager._transition_to("connected")
 
+
 class ConnectedState(ConnectionState):
     _state_name = "connected"
 
@@ -85,6 +88,7 @@ class ConnectedState(ConnectionState):
             self.manager._transition_to("lost")
             self.manager._lost_since = now
 
+
 class ArmedState(ConnectionState):
     _state_name = "armed"
 
@@ -98,6 +102,7 @@ class ArmedState(ConnectionState):
 
     def on_disarm_command(self):
         self.manager._transition_to("disarmed")
+
 
 class DisarmedState(ConnectionState):
     _state_name = "disarmed"
@@ -114,6 +119,7 @@ class DisarmedState(ConnectionState):
 
     def on_arm_command(self):
         self.manager._transition_to("armed")
+
 
 class LostState(ConnectionState):
     _state_name = "lost"
@@ -145,7 +151,8 @@ class LostState(ConnectionState):
         if self.manager._last_packet_time is not None:
             self.manager._lost_since = None
             # Восстанавливаемся в то же состояние, что было до lost
-            restore = self.manager._status_before_lost if self.manager._status_before_lost in ("armed", "connected", "disarmed") else "connected"
+            restore = self.manager._status_before_lost if self.manager._status_before_lost in ("armed", "connected",
+                                                                                               "disarmed") else "connected"
             self.manager._transition_to(restore)
 
     def on_periodic_check(self, now: float, time_since_packet: float | None):
@@ -155,6 +162,7 @@ class LostState(ConnectionState):
             return
         self.manager._lost_since = None
         self.manager._transition_to("recovery")
+
 
 class RecoveryState(ConnectionState):
     _state_name = "recovery"
@@ -182,15 +190,16 @@ class RecoveryState(ConnectionState):
             self.manager._transition_to("connected")
             log.msg("[Recovery] Link recovered -> connected (дрон мог перезапуститься)")
 
-class StatusManager:
-    STATUS_WAITING   = "waiting"
-    STATUS_CONNECTED = "connected"
-    STATUS_ARMED     = "armed"
-    STATUS_DISARMED  = "disarmed"
-    STATUS_LOST      = "lost"
-    STATUS_RECOVERY  = "recovery"
 
-    PACKET_TIMEOUT           = 5.0
+class StatusManager:
+    STATUS_WAITING = "waiting"
+    STATUS_CONNECTED = "connected"
+    STATUS_ARMED = "armed"
+    STATUS_DISARMED = "disarmed"
+    STATUS_LOST = "lost"
+    STATUS_RECOVERY = "recovery"
+
+    PACKET_TIMEOUT = 5.0
     LOST_TO_RECOVERY_TIMEOUT = 10.0
 
     def __init__(self, config, wlans, manager=None):
@@ -203,12 +212,12 @@ class StatusManager:
         self._has_ever_established_link = False
 
         self._states = {
-            "waiting":    WaitingState(self),
-            "connected":  ConnectedState(self),
-            "armed":      ArmedState(self),
-            "disarmed":   DisarmedState(self),
-            "lost":       LostState(self),
-            "recovery":   RecoveryState(self),
+            "waiting": WaitingState(self),
+            "connected": ConnectedState(self),
+            "armed": ArmedState(self),
+            "disarmed": DisarmedState(self),
+            "lost": LostState(self),
+            "recovery": RecoveryState(self),
         }
         self._current_state = None
         self._previous_status = None

@@ -2,7 +2,7 @@
 Frequency Selection — каналы, фабрика каналов, score/статистика по каналам.
 Переключение каналов (хопы) отключено по умолчанию.
 """
-import time 
+import time
 from twisted.python import log
 from twisted.internet import reactor, task, defer
 
@@ -17,6 +17,7 @@ from .sich_connection import (
     calculate_snr,
     format_channel_freq,
 )
+
 
 def _score_frames():
     return getattr(settings.common, "freq_sel_score_frames", 3)
@@ -130,7 +131,6 @@ class Channel:
     def set_on_score_updated(self, callback):
         self._on_score_updated = callback
 
-
     #
     def clear_measurements(self):
         keep = _channel_keep_history()
@@ -141,8 +141,10 @@ class Channel:
             self._score = self._score[-keep:]
         self._switched_at = time.time()
 
+
 class ChannelsFactory:
     """Создание набора Channel по списку частот и «найти или создать» канал по одной частоте (get_single_freq)."""
+
     def __init__(self, channels):
         self.channels = channels
 
@@ -162,9 +164,10 @@ class ChannelsFactory:
         if value in self.as_freq:
             rec = self.as_freq[value]
         else:
-            rec = Channel(value)          # создание Channel здесь, если частоты ещё не было в списке
+            rec = Channel(value)  # создание Channel здесь, если частоты ещё не было в списке
             self.channels.append(rec)
         return rec
+
 
 class Channels:
     """
@@ -173,6 +176,7 @@ class Channels:
     3) Центральная логика каналов: next_channel(), prev_channel(), by_freq(), first_freq_sel_channel, last_freq_sel_channel.
        Хопы и приложение вызывают только эти методы — без дублирования логики.
     """
+
     def __init__(self, frequency_selection, wifi_channel_freq, reserve_freq, freq_sel_frequencies):
         self.frequency_selection = frequency_selection
         chan_factory = ChannelsFactory.create(freq_sel_frequencies)
@@ -312,6 +316,7 @@ def switch_wifiradio_to_channel(manager, channels, target_channel):
 
     log.msg(f"[HOP SUCCESS] Now on {format_channel_freq(target_freq)}")
 
+
 # -------------------
 # 1) Только локально — команда на другую сторону не отправляется
 # -------------------
@@ -360,6 +365,7 @@ class HopLocalOnly:
     def to_wifi_channel(self, delay=0):
         """Локальный хоп на wifi_channel (старт/резерв из конфига)."""
         return self._switch_to(self.channels.reserve, delay=delay)
+
 
 # -------------------
 # 2) Запланированный хоп GS -> дрон (выполнение на дроне в action_time)
@@ -430,7 +436,7 @@ class FrequencySelection:
         self.hop_at_time = HopScheduledGS2Drone(manager, self.channels)
         # Только ссылки на текущие Deferred (не флаги). Очищаются при завершении/отмене — после
         # восстановления в connected/armed/disarmed новые запланированные хопы запускаются как обычно.
-        self._pending_hop_request_d = None   # Deferred от request_hop() (ожидание ответа от дрона)
+        self._pending_hop_request_d = None  # Deferred от request_hop() (ожидание ответа от дрона)
         self._pending_scheduled_hop_d = None  # Deferred от hop_at_drone_time (deferLater)
         # Лог канала раз в секунду и на ГС, и на дроне (на дроне stats могут приходить реже — лог не зависел от них)
         self._channel_log_task = task.LoopingCall(self._log_current_channel_once)
@@ -479,6 +485,7 @@ class FrequencySelection:
         Вызывается после получения ответа с полем "time".
         Цель: если на wifi_channel — первый из freq_sel, иначе следующий канал.
         """
+
         def _run_hop():
             # если не channels.current.freq не равен channels.reserve.freq тогда хоп на следующий канал
             if self.channels.current.freq == self.channels.reserve.freq:

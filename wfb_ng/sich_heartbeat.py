@@ -55,7 +55,7 @@ def _current_channel(manager):
 
 def _local(manager):
     metrics_manager = _metrics_manager(manager)
-    rssi, per, snr = None, None, None # возвращаю сразу еперный театр 3 пустых коробки, спасибо pip8 за это
+    rssi, per, snr = None, None, None  # возвращаю сразу еперный театр 3 пустых коробки, спасибо pip8 за это
     if metrics_manager:
         metrics = metrics_manager.get_metrics()
         if metrics:
@@ -75,9 +75,9 @@ def _score(manager):
 
 def _remote_from_peer(peer_message):
     if not peer_message or not isinstance(peer_message, dict):
-        return None # возвращаю пустую коробку, что бы не было ошибки
+        return None  # возвращаю пустую коробку, что бы не было ошибки
     if peer_message.get("type") != "heartbeat":
-        return None # возвращаю пустую коробку, что бы не было ошибки
+        return None  # возвращаю пустую коробку, что бы не было ошибки
     peer_local = peer_message.get("local") or {}
     remote = {
         "timestamp": _val(peer_message.get("timestamp")),
@@ -95,8 +95,8 @@ def _remote_from_peer(peer_message):
 class HeartbeatGS(DatagramProtocol):
     def __init__(self, manager):
         self.manager = manager
-        self._last_from_drone = None # по умолчанию пустая коробка где нет данных
-        self._tick_loop = None # по умолчанию пустая коробка где нет данных
+        self._last_from_drone = None  # по умолчанию пустая коробка где нет данных
+        self._tick_loop = None  # по умолчанию пустая коробка где нет данных
 
     def startProtocol(self):
         self._tick_loop = task.LoopingCall(self._tick)
@@ -127,7 +127,8 @@ class HeartbeatGS(DatagramProtocol):
             return
         self._last_from_drone = message
         remote_local = message.get("local") or {}
-        log.msg("[HBeat] GS <- Drone: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"), remote_local.get("snr")))
+        log.msg("[HBeat] GS <- Drone: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"),
+                                                                remote_local.get("snr")))
         callback = _attr(self.manager, "heartbeat_callback")
         if callback:
             try:
@@ -141,8 +142,8 @@ class HeartbeatGS(DatagramProtocol):
 class HeartbeatDrone(DatagramProtocol):
     def __init__(self, manager):
         self.manager = manager
-        self._last_from_gs = None # пустая коробка
-        self._tick_loop = None # пустая коробка
+        self._last_from_gs = None  # пустая коробка
+        self._tick_loop = None  # пустая коробка
 
     def startProtocol(self):
         self._tick_loop = task.LoopingCall(self._tick)
@@ -172,4 +173,5 @@ class HeartbeatDrone(DatagramProtocol):
             return
         self._last_from_gs = message
         remote_local = message.get("local") or {}
-        log.msg("[HBeat] Drone <- GS: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"), remote_local.get("snr")))
+        log.msg("[HBeat] Drone <- GS: rssi=%s per=%s snr=%s" % (remote_local.get("rssi"), remote_local.get("per"),
+                                                                remote_local.get("snr")))

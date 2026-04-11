@@ -15,21 +15,20 @@ from twisted.internet import task, reactor
 from . import call_and_check_rc
 from .conf import settings
 
-
 # ==================== НАСТРОЙКИ ====================
 
-power_selection_switcher    = settings.common.power_sel_enabled
-power_selection_level_list  = settings.common.power_sel_levels
+power_selection_switcher = settings.common.power_sel_enabled
+power_selection_level_list = settings.common.power_sel_levels
 
 # Гистерезис (в dBm)
-RSSI_INCREASE_THRESHOLD   = -48    # RSSI ниже этого то увеличиваем мощность
-RSSI_DECREASE_THRESHOLD   = -32    # RSSI выше этого то уменьшаем мощность
+RSSI_INCREASE_THRESHOLD = -48  # RSSI ниже этого то увеличиваем мощность
+RSSI_DECREASE_THRESHOLD = -32  # RSSI выше этого то уменьшаем мощность
 # При PER выше этого — не уменьшаем мощность (связь ненадёжная, RSSI может быть невалидным)
-PER_DECREASE_MAX          = 80     # %; при PER > 80% команда decrease не отправляется
+PER_DECREASE_MAX = 80  # %; при PER > 80% команда decrease не отправляется
 # Гистерезис (в dBm)
-MIN_TIME_ON_LEVEL         = 8.0    # секунд
-DRONE_STATS_LOG_INTERVAL  = 1      # Интервал лога статистики на дроне (секунды)
-GS_POWER_CHECK_INTERVAL   = 2.0    # Интервал проверки RSSI на GS перед отправкой команды ДРОНУ (секунды)
+MIN_TIME_ON_LEVEL = 8.0  # секунд
+DRONE_STATS_LOG_INTERVAL = 1  # Интервал лога статистики на дроне (секунды)
+GS_POWER_CHECK_INTERVAL = 2.0  # Интервал проверки RSSI на GS перед отправкой команды ДРОНУ (секунды)
 
 
 def throttle_elapsed(last_time, interval=MIN_TIME_ON_LEVEL):
@@ -214,13 +213,13 @@ class PowerSelection:
         self._current_state = None
         self._states = {
             "disabled": DisabledState(self),
-            "locked":   LockedState(self),
-            "active":   ActiveAdjustmentState(self),
+            "locked": LockedState(self),
+            "active": ActiveAdjustmentState(self),
         }
-        
-        self.level_index = 0            # Текущий индекс уровня мощности
-        self._last_change_time = 0.0    # Время последнего изменения уровня
-        self._last_command_time = 0.0   # Время последней применённой команды tx_power с GS (throttle т.е задержка)
+
+        self.level_index = 0  # Текущий индекс уровня мощности
+        self._last_change_time = 0.0  # Время последнего изменения уровня
+        self._last_command_time = 0.0  # Время последней применённой команды tx_power с GS (throttle т.е задержка)
 
         # Периодический лог "Drone - Channel" отключён — канал/RSSI/PER/SNR уже пишет frequency_selection раз в секунду
         self._lc_log = None
@@ -231,8 +230,7 @@ class PowerSelection:
         if self.enabled and self.levels:
             for i, val in enumerate(self.levels):
                 log.msg(f"[PS] Уровень {i} = {val} -> {level_to_dbm(val):.1f} dBm")
-            self.set_txpower_level(self.level_index) # Устанавливаем минимальную мощность при старте
-
+            self.set_txpower_level(self.level_index)  # Устанавливаем минимальную мощность при старте
 
         # Начальное состояние
         if not self.enabled:
@@ -318,7 +316,6 @@ class PowerSelection:
 
         rssi = metrics.get('rssi') if metrics else None
         self._current_state.on_check_signal(rssi)
-        
 
     def _log_drone_stats(self):
         freq = None
@@ -348,7 +345,7 @@ class PowerSelection:
             f"SNR: {snr_str}, ConfTXp: {conf_str}, RealTXp: {real_str}",
             flush=True
         )
-        
+
     # ─── тут функции для управления мощностью на дроне ───────────────────
 
     def set_txpower_level(self, level_index):
