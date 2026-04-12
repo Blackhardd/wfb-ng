@@ -83,7 +83,7 @@ class Channel:
 
     def _update_score(self):
         n = _score_frames()
-        rssi = calculate_rssi(self._measurements)
+        rssi = calculate_rssi(self._measurements) #TODO: delete?
         per = calculate_per(self._measurements, n)
         snr = calculate_snr(self._measurements, n)
         max_pen = _score_per_max_penalty()
@@ -193,7 +193,7 @@ class Channels:
             chan.set_on_score_updated(self._on_channel_score_updated)
 
     def _on_channel_score_updated(self, channel, per=None):
-        self.frequency_selection._on_channel_score_updated(channel, per=per)
+        self.frequency_selection._on_channel_score_updated(channel, per=per) # TODO: protected?
 
     def on_stats_received(self, rx_id, stats_dict):
         stats = MeasurementStats(
@@ -320,7 +320,7 @@ def switch_wifiradio_to_channel(manager, channels, target_channel):
 # -------------------
 # 1) Только локально — команда на другую сторону не отправляется
 # -------------------
-class HopLocalOnly:
+class HopLocalOnly: #TODO: use case?
     """
     Переключение радио только на этой машине. Команда на дрон/GS не отправляется.
     Использование: на GS или на дроне, когда нужно переключить своё радио без согласования со второй стороной.
@@ -457,14 +457,14 @@ class FrequencySelection:
     def reset_all_channels_stats(self):
         log.msg("[FS] Resetting all channel statistics")
         for channel in self.channels.all:
-            channel._measurements.clear()
+            channel._measurements.clear() # TODO: protected?
             channel._last_packet_time = 0
             channel._score = [100]
 
     # ------------------- Запланированный синхронный хоп GS ↔ дрон -------------------
     # ГС: request_hop() -> команда дрону. Дрон: handle_hop_command() (из manager) -> время в ответ, свой хоп. ГС: hop_at_drone_time(time).
 
-    def get_action_time(self, interval=1.0):
+    def get_action_time(self, interval=1.0): # TODO: static is better
         """Время для синхронного хопа (через interval секунд). Используется дроном при ответе на freq_sel_hop."""
         return time.time() + interval
 
@@ -494,7 +494,7 @@ class FrequencySelection:
                 target = self.channels.next_channel()
             if target is None or target.freq == self.channels.current.freq:
                 log.msg("[FS] hop_at_drone_time: skip (on target or no next)")
-                return
+                return None
             return switch_wifiradio_to_channel(self.manager, self.channels, target)
 
         delay = max(0.0, action_time - time.time())
@@ -547,7 +547,7 @@ class FrequencySelection:
                 try:
                     pending.cancel()
                 except Exception:
-                    pass
+                    pass # TODO: maybe log?
                 setattr(self, name, None)
                 cancelled = True
         if cancelled:
@@ -570,8 +570,8 @@ class FrequencySelection:
             return
 
         if per is None:
-            per = calculate_per(channel._measurements, _score_frames())
-        snr = calculate_snr(channel._measurements, _score_frames())
+            per = calculate_per(channel._measurements, _score_frames()) # TODO: protected?
+        snr = calculate_snr(channel._measurements, _score_frames()) #TODO: protected?
         score = channel.score
         hop_min = _per_hop_min()
         hop_max = _per_hop_max()
@@ -579,7 +579,7 @@ class FrequencySelection:
         score_thr = _score_hop_threshold()
 
         per_trigger = hop_min <= per <= hop_max
-        snr_trigger = snr_thr > 0 and snr > 0 and snr < snr_thr
+        snr_trigger = snr_thr > 0 and snr > 0 and snr < snr_thr # TODO: simplify? snr_thr > 0 and 0 < snr < snr_thr
         score_trigger = score_thr > 0 and score < score_thr
         if not (per_trigger or snr_trigger or score_trigger):
             return
@@ -587,7 +587,7 @@ class FrequencySelection:
         now = time.time()
         last = getattr(self, "_last_hop_time", None)
         reactive = per_trigger or snr_trigger
-        planned = score_trigger
+        planned = score_trigger #TODO: unused
         cooldown = _per_hop_cooldown_sec() if reactive else _score_hop_cooldown_sec()
         if last is not None and (now - last) < cooldown:
             elapsed = now - last
