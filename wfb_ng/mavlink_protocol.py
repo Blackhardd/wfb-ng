@@ -84,8 +84,8 @@ def mavlink_parser_gen(parse_l2=False):
     mlist = []
     skip = 0
     bad = 0
-    parse_map = { 0xfe: parse_mavlink_l2_v1,
-                  0xfd: parse_mavlink_l2_v2 }
+    parse_map = {0xfe: parse_mavlink_l2_v1,
+                 0xfd: parse_mavlink_l2_v2}
 
     while True:
         # GC
@@ -110,7 +110,7 @@ def mavlink_parser_gen(parse_l2=False):
 
             # mavlink 2
             elif version == 0xfd:
-                mlen, flags = struct.unpack('BB', buffer[skip + 1 : skip + 3])
+                mlen, flags = struct.unpack('BB', buffer[skip + 1: skip + 3])
 
                 if flags & ~0x01:
                     log.msg('Unsupported mavlink flags: 0x%x' % (flags,))
@@ -134,7 +134,6 @@ def mavlink_parser_gen(parse_l2=False):
                 mlist.append(bytes(buffer[skip: skip + mlen]))
 
             skip += mlen
-
 
 
 class MavlinkARMProtocol(object):
@@ -161,10 +160,11 @@ class MavlinkARMProtocol(object):
                 cmd_id = fmap.get('command')
                 # В лог только обрабатываемая команда ARM/DISARM (400)
                 if cmd_id == 400:  # MAV_CMD_COMPONENT_ARM_DISARM
-                    log.msg(f'MAVLINK команда от GCS: [sys:{sys_id} comp:{comp_id}]: MAV_CMD_COMPONENT_ARM_DISARM (400)')
+                    log.msg(
+                        f'MAVLINK команда от GCS: [sys:{sys_id} comp:{comp_id}]: MAV_CMD_COMPONENT_ARM_DISARM (400)')
 
                 # Моментальная реакция на команду arm/disarm (не дожидаясь heartbeat от дрона)
-                if cmd_id == 400: # MAV_CMD_COMPONENT_ARM_DISARM
+                if cmd_id == 400:  # MAV_CMD_COMPONENT_ARM_DISARM
                     param1 = fmap.get('param1')
                     if param1 == 1.0:
                         log.msg("Увага: MavlinkARMProtocol, команда - мгновенная команда ARM")
@@ -298,4 +298,3 @@ class MavlinkLoggerProtocol(object):
                                     timestamp=time.time(),
                                     hdr=l2_headers,
                                     msg=message))
-
